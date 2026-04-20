@@ -1,0 +1,46 @@
+export const PHOTOSHOP_KEYMAP = {
+  name: 'Photoshop',
+  bindings: {
+    select:       'V',
+    rect:         'U',
+    circle:       'E',
+    text:         'T',
+    image:        'I',
+    line:         'L',
+    undo:         'Ctrl+Z',
+    redo:         'Ctrl+Shift+Z',
+    delete:       'Delete',
+    selectAll:    'Ctrl+A',
+    deselect:     'Escape',
+    bringForward:   'Ctrl+]',
+    sendBackward:   'Ctrl+[',
+    matchImageSize: 'Ctrl+Shift+M',
+    eyedropper:     'K',
+    polygon:        'P',
+    star:           'S',
+    arrow:          'A',
+  },
+};
+
+export const TOOL_ACTIONS = ['select', 'rect', 'circle', 'text', 'image', 'line', 'eyedropper', 'polygon', 'star', 'arrow'];
+
+export const ACTION_LABELS = {
+  select:       'Select Tool',
+  rect:         'Rectangle Tool',
+  circle:       'Circle Tool',
+  text:         'Text Tool',
+  image:        'Image Tool',
+  line:         'Line Tool',
+  undo:         'Undo',
+  redo:         'Redo',
+  delete:       'Delete Element',
+  selectAll:    'Select All',
+  deselect:     'Deselect',
+  bringForward:   'Bring Forward',
+  sendBackward:   'Send Backward',
+  matchImageSize: 'Match Image Size',
+  eyedropper:     'Eyedropper Tool',
+  polygon:        'Polygon Tool',
+  star:           'Star Tool',
+  arrow:          'Arrow Tool',
+};
