@@ -37,12 +37,12 @@ A vector drawing canvas where you design or edit your template before mapping fi
 
 | Tool | Key | Description |
 |------|-----|-------------|
-| Select | `V` | Select, move, resize, rotate elements |
+| Select | `V` | Select, move, resize, rotate elements. After placing any shape with a draw tool, the tool automatically returns to Select. |
 | Rectangle | `U` | Draw rectangles / rounded rectangles |
 | Circle | `E` | Draw ellipses and circles |
 | Polygon | `P` | Draw regular N-sided polygons (triangle, hexagon, etc.) |
 | Star | `S` | Draw star shapes with configurable arms and inner radius |
-| Text | `T` | Place text labels |
+| Text | `T` | Place text labels (bounding box auto-sizes to rendered text) |
 | Image | `I` | Place image placeholder boxes |
 | Line | `L` | Draw straight lines |
 | Arrow | `A` | Draw lines with arrowheads |
@@ -68,9 +68,11 @@ A vector drawing canvas where you design or edit your template before mapping fi
 | Deselect | `Escape` |
 | Bring forward | `Ctrl+]` |
 | Send backward | `Ctrl+[` |
+| **Duplicate selected** | **`Ctrl+D`** |
 | Snap to image scale | `Ctrl+Shift+M` |
 | Multi-select toggle | `Shift` + click element |
 | Marquee select | Drag on empty canvas space |
+| Nudge element | Arrow keys (1 px) · `Shift` + Arrow (10 px) |
 
 #### Snap to grid
 
@@ -86,7 +88,7 @@ When an element is selected the right panel shows:
 - **Corner Radius** — rect elements only
 - **Fill & Stroke** — color pickers + hex/rgb input; stroke width; **Stroke Dash** (solid / dashed / dotted); **Linecap** (Butt / Round / Square)
 - **Opacity** — 0–100% slider
-- **Text** — content, font size, weight, family, alignment, color (text elements only)
+- **Text** — content, font size, weight, family, alignment, color (text elements only); bounding box auto-adjusts to actual rendered text
 - **Image** — upload from device (converted to base64) or paste a URL; **Snap to Scale** button / `Ctrl+Shift+M` snaps the element to the nearest clean scale of the image's natural size (e.g. 0.5×, 1×, 2×)
 - **Polygon** — number of sides (3–12, polygon elements only)
 - **Star** — number of arms (3–12) and inner radius percentage slider (star elements only)
@@ -98,6 +100,7 @@ When an element is selected the right panel shows:
 |--------|--------|
 | Forward | Bring element(s) one layer up |
 | Backward | Send element(s) one layer down |
+| **Duplicate** | Clone selected element(s) offset by 10 px (also `Ctrl+D`) |
 | Show / Hide all | Toggle element(s) visibility |
 | Lock all / Unlock all | Lock/unlock all selected elements |
 | Delete elements | Remove all selected elements from canvas |
@@ -106,13 +109,13 @@ When an element is selected the right panel shows:
 **Multi-select tips:**
 - Click to select a single element (clears multi-selection)
 - `Shift`+click to add/remove element from multi-selection
-- Drag on empty canvas to create a marquee and select all intersecting elements
+- Drag on empty canvas to create a marquee and select all elements **fully or partially inside** the drawn rectangle
 - Drag any selected element to move all of them together
-- When multiple elements are selected, properties panel shows batch actions at the top (lock/unlock all, show/hide all, delete all) |
+- When multiple elements are selected, properties panel shows batch actions at the top (lock/unlock all, show/hide all, delete all)
 
 #### Layers panel
 
-Located at the bottom of the left toolbar. Shows all elements in stacking order (top = front).
+Located at the bottom of the left toolbar. Shows all elements in stacking order (top = front). Each row shows the **element type icon** (colored to match the element type) and the element name.
 
 - **Click** a layer row to select that element (clears multi-selection)
 - **Shift+click** a layer row to add/remove that element from multi-selection without clearing it
@@ -128,6 +131,21 @@ Located at the bottom of the left toolbar. Shows all elements in stacking order 
 #### Keymap settings
 
 Click the keymap name button in the sub-bar (shows "Photoshop") to open the keymap editor where you can re-bind any action or import a custom keymap JSON.
+
+#### Sub-bar buttons
+
+| Button | Action |
+|--------|--------|
+| **Snap** | Toggle 8 px grid snapping |
+| **Paste SVG** | Open modal to paste SVG markup and import it onto the canvas |
+| **Variables** | Manage reusable CSS color / value variables |
+| **Inspect** | Hover to inspect elements (shows id, type, size); click to select. Also `Ctrl+Shift+C` |
+| **−** / **+** | Zoom out / in |
+| Zoom % input | Type a zoom percentage and press Enter |
+| **Fit** | Fit canvas to viewport (`0`) |
+| Keymap name | Open keymap / shortcut editor |
+| **Save SVG** | Download canvas as `.svg` |
+| **Map Fields** | Advance to the mapping step |
 
 #### Exiting the editor
 
@@ -211,6 +229,7 @@ Displays the generated JSON schema for the template. Click **Download JSON** to 
 
 | Control | Location | Purpose |
 |---------|----------|---------|
+| **Theme toggle** | Top-right | Switch between light and dark mode; also `Ctrl+Shift+L` / `Cmd+Shift+L` |
 | **Template name** | Centre (mapping / preview modes) | Click to rename the template |
 | **Step indicator** | Centre | Shows current step (Edit · Map · Preview); click a past step to go back |
 | **New Project** | Top-left | Clears everything and returns to the start screen |
@@ -220,7 +239,7 @@ Displays the generated JSON schema for the template. Click **Download JSON** to 
 
 ## Session Persistence
 
-The app auto-saves your work to `localStorage`. If you close and reopen the browser tab, your canvas, mappings, template name, and current step are restored automatically.
+The app auto-saves your work to `localStorage`. If you close and reopen the browser tab, your canvas, mappings, template name, current step, and selected light/dark theme are restored automatically.
 
 To start fresh: click **New Project** in the top bar.
 
@@ -237,9 +256,15 @@ To start fresh: click **New Project** in the top bar.
 
 ---
 
-## Keyboard Shortcut Reference
+## Complete Keyboard & Command Reference
 
-### Editor — Tools
+### Global
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+Shift+L` / `Cmd+Shift+L` | Toggle light / dark mode |
+
+### Tools
 
 | Key | Tool |
 |-----|------|
@@ -254,40 +279,75 @@ To start fresh: click **New Project** in the top bar.
 | `A` | Arrow |
 | `K` | Eyedropper |
 
-### Editor — Canvas
+### Canvas Navigation
 
-| Key | Action |
-|-----|--------|
+| Key / Input | Action |
+|-------------|--------|
 | `+` / `=` | Zoom in |
 | `-` | Zoom out |
 | `0` / `Ctrl+0` | Fit canvas to screen |
+| Scroll wheel | Zoom toward cursor |
 | `Space` + drag | Pan canvas |
 | `Ctrl` + drag | Pan canvas |
 | Middle-mouse drag | Pan canvas |
-| Scroll wheel | Zoom toward cursor |
 
-### Editor — Editing
+### Selection
+
+| Key / Action | Result |
+|--------------|--------|
+| Click element | Select only that element |
+| `Shift` + click | Add/remove element from multi-selection |
+| Click empty canvas + drag | Marquee select all intersecting elements |
+| `Ctrl+A` | Select last element in stack |
+| `Escape` | Deselect all |
+| Click layer row | Select that element |
+| `Shift` + click layer row | Toggle in multi-selection |
+
+### Editing
 
 | Key | Action |
 |-----|--------|
 | `Ctrl+Z` | Undo |
 | `Ctrl+Shift+Z` | Redo |
-| `Delete` / `Backspace` | Delete selected element |
-| `Escape` | Deselect |
-| `Ctrl+A` | Select last element |
-| `Ctrl+]` | Bring forward |
-| `Ctrl+[` | Send backward |
-| `Ctrl+Shift+M` | Snap image element to nearest clean scale (0.5×, 1×, 2×…) |
-| `Shift` + rotate handle | Snap rotation to 15° |
-| `Ctrl+Shift+C` | Toggle element inspector (hover to inspect, click to select) |
+| `Delete` / `Backspace` | Delete selected element(s) |
+| `Ctrl+D` | Duplicate selected element(s) (offset +10 px) |
+| `Ctrl+]` | Bring element forward one layer |
+| `Ctrl+[` | Send element backward one layer |
+| `↑` `↓` `←` `→` | Nudge selected element 1 px |
+| `Shift` + Arrow | Nudge 10 px |
+| Double-click text | Open inline text editor |
 
-#### Eyedropper (`K`)
+### Rotation & Resize
 
-1. Select the element you want to recolor
-2. Press `K` (or click Eyedropper in the toolbar)
-3. Click any element to copy its **fill** color onto your selection
-4. `Shift`+click to copy the **stroke** color instead
-5. Press `Escape` to cancel without making any change
+| Key / Action | Result |
+|--------------|--------|
+| Drag rotate handle | Free rotate around center |
+| `Shift` + drag rotate | Snap to 15° increments |
+| Drag resize handle | Resize (free) |
+| `Shift` + drag corner handle | Resize keeping aspect ratio (per element lock setting) |
+
+### Tools & Modes
+
+| Key | Action |
+|-----|--------|
+| `K` | Eyedropper — click element to copy fill; `Shift`+click to copy stroke |
+| `Escape` | Cancel eyedropper / deselect |
+| `Ctrl+Shift+C` | Toggle Inspect mode (hover to inspect, click to select) |
+| `Ctrl+Shift+M` | Snap image to nearest clean natural scale (0.5×, 1×, 2×…) |
+
+### Sub-bar Controls (Editor)
+
+| Control | Action |
+|---------|--------|
+| **Snap** button | Toggle 8 px grid snap |
+| **Paste SVG** button | Import SVG markup via modal |
+| **Variables** button | Open CSS variable manager |
+| **Inspect** button | Toggle element inspector overlay |
+| Zoom % input | Type value + Enter to jump to that zoom level |
+| **Fit** button | Fit canvas to viewport |
+| Keymap name button | Open keymap / shortcut editor |
+| **Save SVG** button | Download canvas as `.svg` |
+| **Map Fields** button | Advance to mapping step |
 
 ---
 

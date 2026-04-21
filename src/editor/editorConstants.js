@@ -18,6 +18,10 @@ export function syncCounter(elements) {
   _counter = max;
 }
 
+export function freshId(type) {
+  return `${type}_${++_counter}`;
+}
+
 export function makeElement(type, canvasWidth = 800, canvasHeight = 600) {
   const id = `${type}_${++_counter}`;
   const cx = canvasWidth  / 2;

@@ -110,6 +110,13 @@ export function useEditorState() {
     applySelection(el.id, [el.id]);
   }, [commit, applySelection]);
 
+  const addElements = useCallback((els) => {
+    if (!els.length) return;
+    const next = [...elementsRef.current, ...els];
+    commit(next);
+    applySelection(els[els.length - 1].id, els.map(e => e.id));
+  }, [commit, applySelection]);
+
   const updateElementLive = useCallback((id, patch) => {
     setElements(elementsRef.current.map(el => el.id === id ? { ...el, ...patch } : el));
   }, [setElements]);
@@ -229,7 +236,7 @@ export function useEditorState() {
     setSelectedId, setPrimarySelectedId, setSelectedIds, toggleSelectedId,
     canUndo: historySize.past > 0,
     canRedo: historySize.future > 0,
-    addElement,
+    addElement, addElements,
     updateElementLive, updateElementsLive,
     updateElement, updateElements,
     snapshotBeforeLive, commitCurrent,

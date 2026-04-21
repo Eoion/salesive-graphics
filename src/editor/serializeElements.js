@@ -25,12 +25,28 @@ function rotateTransform(el) {
 const DASH_MAP = { dashed: '8,4', dotted: '2,4' };
 function dashAttr(d) { return DASH_MAP[d]; }
 
-function serializeOne(el) {
+function serializeOne(el, defs) {
   const vis  = el.visible === false ? ' display="none"' : '';
   const desc = el.description ? ` data-description="${esc(el.description)}"` : '';
   const rot  = rotateTransform(el);
   const da   = dashAttr(el.strokeDash);
   const lc   = (el.strokeLinecap && el.strokeLinecap !== 'butt') ? el.strokeLinecap : undefined;
+
+  // Animation style
+  let animStyle = '';
+  if (el.animation) {
+    const a = el.animation;
+    const kfName = a.name || a.type;
+    animStyle = `animation: ${kfName} ${a.duration || 1}s ${a.easing || 'ease'} ${a.delay || 0}s ${a.repeat === 'infinite' ? 'infinite' : (a.repeat || 1)} forwards;`;
+  }
+  if (el.rawStyle) animStyle += (animStyle ? ' ' : '') + el.rawStyle;
+  const styleAttr = animStyle ? ` style="${esc(animStyle)}"` : '';
+
+  // Extra raw attributes
+  let rawAttrStr = '';
+  if (el.rawAttrs) {
+    rawAttrStr = Object.entries(el.rawAttrs).map(([k, v]) => ` ${k}="${esc(v)}"`).join('');
+  }
 
   switch (el.type) {
     case 'rect':
@@ -46,7 +62,7 @@ function serializeOne(el) {
         'stroke-dasharray': da,
         'stroke-linecap': lc,
         opacity: el.opacity !== 1 ? el.opacity : undefined,
-      })}${desc}${vis}${rot} />`;
+      })}${desc}${vis}${rot}${styleAttr}${rawAttrStr} />`;
 
     case 'circle':
       return `<ellipse ${attrs({
@@ -61,7 +77,7 @@ function serializeOne(el) {
         'stroke-dasharray': da,
         'stroke-linecap': lc,
         opacity: el.opacity !== 1 ? el.opacity : undefined,
-      })}${desc}${vis}${rot} />`;
+      })}${desc}${vis}${rot}${styleAttr}${rawAttrStr} />`;
 
     case 'text': {
       const baseline = el.y + (el.fontSize || 24);
@@ -75,7 +91,7 @@ function serializeOne(el) {
         'text-anchor': el.textAnchor || 'start',
         fill: el.fill || '#000000',
         opacity: el.opacity !== 1 ? el.opacity : undefined,
-      })}${desc}${vis}${rot}>${esc(el.text || '')}</text>`;
+      })}${desc}${vis}${rot}${styleAttr}${rawAttrStr}>${esc(el.text || '')}</text>`;
     }
 
     case 'image':
@@ -87,7 +103,7 @@ function serializeOne(el) {
         href: el.href || '',
         preserveAspectRatio: 'xMidYMid slice',
         opacity: el.opacity !== 1 ? el.opacity : undefined,
-      })}${vis}${rot} />`;
+      })}${vis}${rot}${styleAttr}${rawAttrStr} />`;
 
     case 'line':
       return `<line ${attrs({
@@ -100,7 +116,7 @@ function serializeOne(el) {
         'stroke-dasharray': da,
         'stroke-linecap': lc,
         opacity: el.opacity !== 1 ? el.opacity : undefined,
-      })}${vis}${rot} />`;
+      })}${vis}${rot}${styleAttr}${rawAttrStr} />`;
 
     case 'polygon':
       return `<polygon ${attrs({
@@ -116,7 +132,7 @@ function serializeOne(el) {
         'data-sides': el.sides || 6,
         'data-x': el.x, 'data-y': el.y,
         'data-width': el.width, 'data-height': el.height,
-      })}${desc}${vis}${rot} />`;
+      })}${desc}${vis}${rot}${styleAttr}${rawAttrStr} />`;
 
     case 'star':
       return `<polygon ${attrs({
@@ -133,7 +149,7 @@ function serializeOne(el) {
         'data-inner-ratio': el.innerRatio ?? 0.4,
         'data-x': el.x, 'data-y': el.y,
         'data-width': el.width, 'data-height': el.height,
-      })}${desc}${vis}${rot} />`;
+      })}${desc}${vis}${rot}${styleAttr}${rawAttrStr} />`;
 
     case 'arrow': {
       const x1 = el.x, y1 = el.y, x2 = el.x + el.width, y2 = el.y + el.height;
@@ -159,7 +175,7 @@ function serializeOne(el) {
       let heads = '';
       if (el.arrowEnd !== false) heads += `\n    <polygon points="${arrowheadPoints(x1,y1,x2,y2,sw,1)}" fill="${esc(color)}" />`;
       if (el.arrowStart) heads += `\n    <polygon points="${arrowheadPoints(x1,y1,x2,y2,sw,-1)}" fill="${esc(color)}" />`;
-      return `<g ${gA}${desc}${vis}${rot}>\n    ${lineEl}${heads}\n  </g>`;
+      return `<g ${gA}${desc}${vis}${rot}${styleAttr}${rawAttrStr}>\n    ${lineEl}${heads}\n  </g>`;
     }
 
     default:
@@ -167,12 +183,51 @@ function serializeOne(el) {
   }
 }
 
-export function serializeElements(elements, { width, height }) {
-  const body = elements.map(serializeOne).filter(Boolean).join('\n  ');
+export function serializeElements(elements, { width, height }, defs) {
+  const body = elements.map(el => serializeOne(el, defs)).filter(Boolean).join('\n  ');
+
+  let defsSection = '';
+  if (defs) {
+    const parts = [];
+    if (defs.gradients?.length) {
+      for (const g of defs.gradients) {
+        const stops = g.stops.map(s =>
+          `<stop offset="${s.offset}" stop-color="${s.stopColor}"${s.stopOpacity !== undefined && s.stopOpacity !== 1 ? ` stop-opacity="${s.stopOpacity}"` : ''} />`
+        ).join('');
+        if (g.type === 'radial') {
+          parts.push(`<radialGradient id="${g.id}" cx="${g.cx || '50%'}" cy="${g.cy || '50%'}" r="${g.r || '50%'}">${stops}</radialGradient>`);
+        } else {
+          parts.push(`<linearGradient id="${g.id}" x1="${g.x1 || '0%'}" y1="${g.y1 || '0%'}" x2="${g.x2 || '100%'}" y2="${g.y2 || '0%'}">${stops}</linearGradient>`);
+        }
+      }
+    }
+    if (defs.variables?.length) {
+      const varBlock = defs.variables.map(v => `--${v.name}: ${v.value};`).join(' ');
+      parts.push(`<style><![CDATA[:root { ${varBlock} }]]></style>`);
+    }
+    if (defs.keyframes?.length) {
+      parts.push(`<style><![CDATA[${defs.keyframes.map(k => k.css).join('\n')}]]></style>`);
+    }
+    if (defs.fonts?.length) {
+      const fontCss = defs.fonts.map(f => {
+        if (f.type === 'google') {
+          return `@import url('https://fonts.googleapis.com/css2?family=${encodeURIComponent(f.name)}:wght@400;700&display=swap');`;
+        }
+        if (f.type === 'custom' && f.dataUrl) {
+          return `@font-face { font-family: '${f.name}'; src: url('${f.dataUrl}') format('${f.format || 'truetype'}'); }`;
+        }
+        return '';
+      }).filter(Boolean).join('\n');
+      if (fontCss) parts.push(`<style><![CDATA[${fontCss}]]></style>`);
+    }
+    if (parts.length) defsSection = `  <defs>\n    ${parts.join('\n    ')}\n  </defs>\n`;
+  }
+
   return [
     `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"`,
     `     viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">`,
+    defsSection,
     `  ${body}`,
     `</svg>`,
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }

@@ -15,12 +15,30 @@ import CanvasSizePicker from './components/editor/CanvasSizePicker.jsx';
 import EditorScreen from './components/editor/EditorScreen.jsx';
 import './index.css';
 
+const THEME_KEY = 'salesive_theme';
+
+function getInitialTheme() {
+  try {
+    const storedTheme = localStorage.getItem(THEME_KEY);
+    if (storedTheme === 'light' || storedTheme === 'dark') return storedTheme;
+  } catch {}
+  return 'dark';
+}
+
+function isEditableTarget(target) {
+  return target instanceof HTMLElement && (
+    target.isContentEditable ||
+    ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)
+  );
+}
+
 export default function App() {
   const { mode, navigate } = useRoute();
 
   // ── Sync Session Data ─────────────────────────────────────────────────────────
   const session = loadSession() || {};
 
+  const [theme,        setTheme]        = useState(getInitialTheme);
   const [showPicker,   setShowPicker]   = useState(false);
   const [canvasSize,   setCanvasSize]   = useState(() => session.canvasSize || null);
   const [svgString,    setSvgString]    = useState(() => session.svgString || null);
@@ -43,6 +61,24 @@ export default function App() {
   useEffect(() => {
     saveSession({ mode, svgString, mappings, templateMeta, canvasSize });
   }, [mode, svgString, mappings, templateMeta, canvasSize]);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    try { localStorage.setItem(THEME_KEY, theme); } catch {}
+  }, [theme]);
+
+  useEffect(() => {
+    function onKeyDown(e) {
+      if (isEditableTarget(e.target)) return;
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'l') {
+        e.preventDefault();
+        setTheme(prev => prev === 'dark' ? 'light' : 'dark');
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   // ── Handlers ──────────────────────────────────────────────────────────────────
   function handleUpload(svgText, filename) {
@@ -117,6 +153,9 @@ export default function App() {
         onExport={handleExport}
         onNewProject={handleNewProject}
         onNavigate={navigate}
+        theme={theme}
+        onToggleTheme={() => setTheme(prev => prev === 'dark' ? 'light' : 'dark')}
+        user={{ name: 'Samuel Ikoro', email: 'ikorosamuel1@gmail.com', initials: 'SI' }}
       />
 
       {/* Upload */}

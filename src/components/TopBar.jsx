@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import DuotoneIcon from './DuotoneIcon.jsx';
 import { ICONS } from '../editor/duotoneIcons.js';
 import DocsModal from './DocsModal.jsx';
+
 
 const STEPS = [
   { key: 'editor',  label: 'Edit' },
@@ -10,9 +11,36 @@ const STEPS = [
 ];
 const STEP_ORDER = { editor: 0, mapping: 1, preview: 2 };
 
-export default function TopBar({ mode, templateName, onNameChange, onExport, onNewProject, onNavigate }) {
+export default function TopBar({
+  mode,
+  templateName,
+  onNameChange,
+  onExport,
+  onNewProject,
+  onNavigate,
+  theme = 'dark',
+  onToggleTheme,
+  user,
+}) {
   const currentIdx = STEP_ORDER[mode] ?? -1;
   const [showDocs, setShowDocs] = useState(false);
+  const [showUserMenu, setShowUserMenu] = useState(false);
+  const userMenuRef = useRef(null);
+  const isLight = theme === 'light';
+  const toggleTitle = `Switch to ${isLight ? 'dark' : 'light'} mode (Ctrl+Shift+L / Cmd+Shift+L)`;
+
+  const displayUser = user || { name: 'Demo User', email: 'demo@salesive.com', initials: 'DU' };
+
+  useEffect(() => {
+    if (!showUserMenu) return;
+    function onClickOutside(e) {
+      if (userMenuRef.current && !userMenuRef.current.contains(e.target)) {
+        setShowUserMenu(false);
+      }
+    }
+    document.addEventListener('mousedown', onClickOutside);
+    return () => document.removeEventListener('mousedown', onClickOutside);
+  }, [showUserMenu]);
 
   return (<>
     <header style={{ background: 'var(--bg-surface)', borderBottom: '1px solid var(--border)' }}
@@ -65,6 +93,40 @@ export default function TopBar({ mode, templateName, onNameChange, onExport, onN
 
       {/* Right actions */}
       <div className="flex items-center gap-3" style={{ minWidth: 180, justifyContent: 'flex-end' }}>
+        {onToggleTheme && (
+          <div style={{
+            display: 'flex', alignItems: 'center',
+            background: 'var(--bg-raised)', border: '1px solid var(--border)',
+            borderRadius: 8, padding: 2, gap: 1,
+          }}>
+            {[
+              { key: 'light', icon: ICONS.sun,  label: 'Light mode' },
+              { key: 'dark',  icon: ICONS.moon, label: 'Dark mode'  },
+            ].map(({ key, icon, label }) => {
+              const active = theme === key;
+              return (
+                <button
+                  key={key}
+                  onClick={() => !active && onToggleTheme()}
+                  title={label}
+                  aria-label={label}
+                  style={{
+                    width: 26, height: 24, borderRadius: 6, border: 'none',
+                    background: active ? 'var(--accent-dim)' : 'transparent',
+                    color: active ? 'var(--accent)' : 'var(--text-muted)',
+                    cursor: active ? 'default' : 'pointer',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    transition: 'background 0.12s, color 0.12s',
+                  }}
+                  onMouseEnter={e => { if (!active) e.currentTarget.style.color = 'var(--text-secondary)'; }}
+                  onMouseLeave={e => { if (!active) e.currentTarget.style.color = 'var(--text-muted)'; }}
+                >
+                  <DuotoneIcon svg={icon} size={13} />
+                </button>
+              );
+            })}
+          </div>
+        )}
         <button
           onClick={() => setShowDocs(true)}
           title="Documentation"
@@ -115,6 +177,89 @@ export default function TopBar({ mode, templateName, onNameChange, onExport, onN
             Export Schema
           </button>
         )}
+
+        {/* User indicator */}
+        <div ref={userMenuRef} style={{ position: 'relative' }}>
+          <button
+            onClick={() => setShowUserMenu(m => !m)}
+            title={displayUser.name}
+            style={{
+              width: 28, height: 28, borderRadius: '50%',
+              background: showUserMenu ? 'var(--accent)' : 'var(--accent-dim)',
+              border: `1px solid ${showUserMenu ? 'var(--accent)' : 'rgba(13,101,217,0.3)'}`,
+              color: showUserMenu ? '#fff' : 'var(--accent)',
+              fontSize: 10, fontWeight: 700, cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              transition: 'all 0.12s', flexShrink: 0,
+              letterSpacing: '0.02em',
+            }}
+            onMouseEnter={e => { if (!showUserMenu) { e.currentTarget.style.background = 'var(--accent)'; e.currentTarget.style.color = '#fff'; e.currentTarget.style.borderColor = 'var(--accent)'; }}}
+            onMouseLeave={e => { if (!showUserMenu) { e.currentTarget.style.background = 'var(--accent-dim)'; e.currentTarget.style.color = 'var(--accent)'; e.currentTarget.style.borderColor = 'rgba(13,101,217,0.3)'; }}}
+          >
+            {displayUser.initials}
+          </button>
+
+          {showUserMenu && (
+            <div style={{
+              position: 'absolute', top: 36, right: 0, zIndex: 200,
+              background: 'var(--bg-surface)', border: '1px solid var(--border)',
+              borderRadius: 10, boxShadow: '0 8px 28px rgba(0,0,0,0.4)',
+              minWidth: 210, overflow: 'hidden',
+            }}>
+              {/* User info */}
+              <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{
+                  width: 32, height: 32, borderRadius: '50%', flexShrink: 0,
+                  background: 'var(--accent)', color: '#fff',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 11, fontWeight: 700,
+                }}>
+                  {displayUser.initials}
+                </div>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayUser.name}</div>
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'DM Mono, monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 1 }}>{displayUser.email}</div>
+                </div>
+              </div>
+
+              {/* Menu items */}
+              <div style={{ padding: '4px' }}>
+                {[
+                  { label: 'Profile', icon: ICONS.pencil },
+                  { label: 'Settings', icon: ICONS.layers },
+                ].map(({ label, icon }) => (
+                  <button key={label} onClick={() => setShowUserMenu(false)} style={{
+                    width: '100%', display: 'flex', alignItems: 'center', gap: 8,
+                    padding: '7px 10px', borderRadius: 6, border: 'none',
+                    background: 'transparent', color: 'var(--text-secondary)',
+                    fontSize: 12, cursor: 'pointer', textAlign: 'left',
+                    fontFamily: 'Syne, sans-serif',
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-raised)'; e.currentTarget.style.color = 'var(--text-primary)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-secondary)'; }}
+                  >
+                    <DuotoneIcon svg={icon} size={12} />
+                    {label}
+                  </button>
+                ))}
+                <div style={{ height: 1, background: 'var(--border)', margin: '4px 10px' }} />
+                <button onClick={() => setShowUserMenu(false)} style={{
+                  width: '100%', display: 'flex', alignItems: 'center', gap: 8,
+                  padding: '7px 10px', borderRadius: 6, border: 'none',
+                  background: 'transparent', color: 'var(--red)',
+                  fontSize: 12, cursor: 'pointer', textAlign: 'left',
+                  fontFamily: 'Syne, sans-serif',
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(239,68,68,0.08)'; }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+                >
+                  <DuotoneIcon svg={ICONS.close} size={12} />
+                  Sign out
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </header>
 

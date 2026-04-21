@@ -5,15 +5,27 @@ import { TOOL_ACTIONS } from '../../editor/keymaps/photoshop.js';
 import { useEditorState } from '../../editor/useEditorState.js';
 import { useEditorInteractions } from '../../editor/useEditorInteractions.js';
 import { useKeymap } from '../../editor/useKeymap.js';
+import { useEditorDefs } from '../../editor/useEditorDefs.js';
 import { serializeElements } from '../../editor/serializeElements.js';
+import { parseSVGToElements } from '../../editor/parseSVGToElements.js';
+import { addToCollection } from '../../lib/collection.js';
+import { syncCounter, freshId } from '../../editor/editorConstants.js';
 import EditorToolbar from './EditorToolbar.jsx';
 import EditorCanvas from './EditorCanvas.jsx';
 import EditorPropertiesPanel from './EditorPropertiesPanel.jsx';
 import KeymapSettings from './KeymapSettings.jsx';
+import CollectionModal from './CollectionModal.jsx';
+import PasteSVGModal from './PasteSVGModal.jsx';
+import VariablesPanel from './VariablesPanel.jsx';
+import CodeEditor from './CodeEditor.jsx';
 
 export default function EditorScreen({ canvasSize, onFinish }) {
   const [activeTool,   setActiveTool]   = useState('select');
   const [showKeymap,   setShowKeymap]   = useState(false);
+  const [showCollection, setShowCollection] = useState(false);
+  const [showPasteSVG, setShowPasteSVG] = useState(false);
+  const [showVariables, setShowVariables] = useState(false);
+  const [codeEditElement, setCodeEditElement] = useState(null);
   const [snapEnabled,  setSnapEnabled]  = useState(false);
   const [zoomDisplay,  setZoomDisplay]  = useState(100);
   const [pickerMode,   setPickerMode]   = useState(false);
@@ -28,11 +40,45 @@ export default function EditorScreen({ canvasSize, onFinish }) {
     selectedId, selectedIds,
     setSelectedId, setPrimarySelectedId, setSelectedIds, toggleSelectedId,
     canUndo, canRedo, undo, redo,
-    addElement, updateElementLive, updateElementsLive, updateElement,
+    addElement, addElements, updateElementLive, updateElementsLive, updateElement, updateElements,
     snapshotBeforeLive, commitCurrent, deleteElement, deleteElements,
     bringForward, sendBackward,
     alignElement, reorderElement,
   } = useEditorState();
+
+  const { defs, addGradient, updateGradient, removeGradient,
+    addVariable, updateVariable, removeVariable,
+    addKeyframe, removeKeyframe,
+    addFont, removeFont } = useEditorDefs();
+
+  // Inject / remove loaded fonts in the document head whenever the font list changes
+  useEffect(() => {
+    const fonts = defs.fonts || [];
+    const activeIds = new Set(fonts.map(f => `font-inject-${f.name.replace(/\s+/g, '-')}`));
+
+    // Remove DOM elements for fonts that were deleted
+    document.head.querySelectorAll('[id^="font-inject-"]').forEach(el => {
+      if (!activeIds.has(el.id)) el.remove();
+    });
+
+    // Add DOM elements for newly added fonts
+    for (const font of fonts) {
+      const domId = `font-inject-${font.name.replace(/\s+/g, '-')}`;
+      if (document.getElementById(domId)) continue;
+      if (font.type === 'google') {
+        const link = document.createElement('link');
+        link.id = domId;
+        link.rel = 'stylesheet';
+        link.href = `https://fonts.googleapis.com/css2?family=${encodeURIComponent(font.name)}:wght@400;700&display=swap`;
+        document.head.appendChild(link);
+      } else if (font.type === 'custom' && font.dataUrl) {
+        const style = document.createElement('style');
+        style.id = domId;
+        style.textContent = `@font-face { font-family: '${font.name}'; src: url('${font.dataUrl}') format('${font.format || 'truetype'}'); }`;
+        document.head.appendChild(style);
+      }
+    }
+  }, [defs.fonts]);
 
   const { bindings, keymapName, matchAction, importKeymap, resetToDefault } = useKeymap();
 
@@ -44,6 +90,7 @@ export default function EditorScreen({ canvasSize, onFinish }) {
       updateElementLive, updateElementsLive,
       commitCurrent, snapshotBeforeLive,
       deleteElement, deleteElements, activeTool, addElement,
+      onAfterAddElement: () => setActiveTool('select'),
       canvasRef, scaleRef, canvasSize,
       snapEnabled, gridSize: 8,
     });
@@ -57,6 +104,37 @@ export default function EditorScreen({ canvasSize, onFinish }) {
         e.preventDefault();
         setPickerMode(m => !m);
         return;
+      }
+      if (e.ctrlKey && e.key === 'd') {
+        e.preventDefault();
+        duplicateElements();
+        return;
+      }
+      // Lock/unlock selected (Ctrl+L)
+      if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'l') {
+        if (selectedIds.length) {
+          e.preventDefault();
+          const hasUnlocked = selectedIds.some(id => !elements.find(el => el.id === id)?.locked);
+          updateElements(selectedIds, { locked: hasUnlocked });
+        }
+        return;
+      }
+      // Save to collection (Ctrl+Shift+B)
+      if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'b') {
+        if (selectedIds.length) {
+          e.preventDefault();
+          handleSaveToCollection(elements.filter(el => selectedIds.includes(el.id)));
+        }
+        return;
+      }
+      // Edit text (F2 or Enter on text element)
+      if ((e.key === 'F2' || e.key === 'Enter') && selectedIds.length === 1) {
+        const el = elements.find(el => el.id === selectedId);
+        if (el?.type === 'text') {
+          e.preventDefault();
+          canvasCtrl.current.textEdit?.(selectedId);
+          return;
+        }
       }
       if (e.key === 'Escape' && activeTool === 'eyedropper') {
         if (eyedropperPrevIdRef.current) setSelectedId(eyedropperPrevIdRef.current);
@@ -150,7 +228,7 @@ export default function EditorScreen({ canvasSize, onFinish }) {
   }
 
   function handleDownload() {
-    const svg = serializeElements(elements, canvasSize);
+    const svg = serializeElements(elements, canvasSize, defs);
     const blob = new Blob([svg], { type: 'image/svg+xml' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -159,7 +237,7 @@ export default function EditorScreen({ canvasSize, onFinish }) {
   }
 
   function handleFinish() {
-    const svg = serializeElements(elements, canvasSize);
+    const svg = serializeElements(elements, canvasSize, defs);
     onFinish(svg);
   }
 
@@ -168,6 +246,62 @@ export default function EditorScreen({ canvasSize, onFinish }) {
     setZoomDisplay(pct);
     canvasCtrl.current.setZoomPct?.(pct);
   }
+
+  function duplicateElements() {
+    if (!selectedIds.length) return;
+    syncCounter(elements);
+    const dupes = selectedIds
+      .map(id => elements.find(e => e.id === id))
+      .filter(Boolean)
+      .map(el => ({ ...structuredClone(el), id: freshId(el.type), x: el.x + 10, y: el.y + 10 }));
+    if (dupes.length) addElements(dupes);
+  }
+
+  function insertElementsAtCenter(newEls) {
+    syncCounter(elements);
+    let minX = Infinity, minY = Infinity;
+    for (const el of newEls) { if (el.x < minX) minX = el.x; if (el.y < minY) minY = el.y; }
+    const offsetX = (canvasSize.width / 2) - minX;
+    const offsetY = (canvasSize.height / 2) - minY;
+    for (const el of newEls) {
+      el.id = freshId(el.type);
+      el.x += offsetX;
+      el.y += offsetY;
+      addElement(el);
+    }
+  }
+
+  function handleSaveToCollection(selectedEls) {
+    const name = selectedEls.length === 1
+      ? (selectedEls[0].text || selectedEls[0].id)
+      : `${selectedEls.length} elements`;
+    addToCollection(name, selectedEls);
+  }
+
+  function handleInsertFromCollection(item) {
+    const cloned = structuredClone(item.elements);
+    insertElementsAtCenter(cloned);
+    setShowCollection(false);
+  }
+
+  function handlePasteSVG(svgText) {
+    const { elements: parsed } = parseSVGToElements(svgText);
+    if (parsed.length) insertElementsAtCenter(parsed);
+  }
+
+  // ── Paste from clipboard ────────────────────────────────────────────────────
+  useEffect(() => {
+    function onPaste(e) {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+      const text = e.clipboardData?.getData('text');
+      if (text && (text.trim().startsWith('<svg') || text.trim().startsWith('<?xml'))) {
+        e.preventDefault();
+        handlePasteSVG(text);
+      }
+    }
+    window.addEventListener('paste', onPaste);
+    return () => window.removeEventListener('paste', onPaste);
+  }, [elements, canvasSize]);
 
   // ── Sub-bar button style ──────────────────────────────────────────────────
   const subBtn = (active = false) => ({
@@ -192,7 +326,7 @@ export default function EditorScreen({ canvasSize, onFinish }) {
         setSelectedIds={setSelectedIds}
         toggleSelectedId={toggleSelectedId}
         updateElement={updateElement}
-        updateElements={updateElement}
+        updateElements={updateElements}
         deleteElements={deleteElements}
         bringForward={bringForward}
         sendBackward={sendBackward}
@@ -205,6 +339,10 @@ export default function EditorScreen({ canvasSize, onFinish }) {
         redo={redo}
         bindings={bindings}
         onOpenKeymap={() => setShowKeymap(true)}
+        onDuplicate={duplicateElements}
+        onSaveToCollection={handleSaveToCollection}
+        onOpenCollection={() => setShowCollection(true)}
+        onTextEdit={(id) => canvasCtrl.current.textEdit?.(id)}
       />
 
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -214,6 +352,12 @@ export default function EditorScreen({ canvasSize, onFinish }) {
           background: 'var(--bg-surface)', borderBottom: '1px solid var(--border)',
           display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0,
         }}>
+          {/* Canvas size */}
+          <span style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'DM Mono, monospace', flexShrink: 0, marginRight: 4 }}>
+            {canvasSize.width}×{canvasSize.height}
+          </span>
+          <div style={{ width: 1, height: 14, background: 'var(--border)', flexShrink: 0 }} />
+
           {/* Hint text */}
           <span style={{ fontSize: 11, color: 'var(--text-muted)', flexShrink: 0 }}>
             {activeTool === 'eyedropper'
@@ -232,6 +376,16 @@ export default function EditorScreen({ canvasSize, onFinish }) {
           <button onClick={() => setSnapEnabled(s => !s)} style={subBtn(snapEnabled)} title="Snap to 8px grid">
             <DuotoneIcon svg={ICONS.grid} size={12} />
             Snap
+          </button>
+
+          <button onClick={() => setShowPasteSVG(true)} style={subBtn()} title="Paste SVG code (Ctrl+V on canvas)">
+            <DuotoneIcon svg={ICONS.paste} size={12} />
+            Paste SVG
+          </button>
+
+          <button onClick={() => setShowVariables(true)} style={subBtn()} title="Manage color variables">
+            <DuotoneIcon svg={ICONS.pencil} size={12} />
+            Variables
           </button>
 
           {/* Element picker */}
@@ -316,6 +470,7 @@ export default function EditorScreen({ canvasSize, onFinish }) {
 
         <EditorCanvas
           elements={elements}
+          defs={defs}
           selectedId={selectedId}
           selectedIds={selectedIds}
           setSelectedIds={setSelectedIds}
@@ -327,10 +482,12 @@ export default function EditorScreen({ canvasSize, onFinish }) {
           canvasCtrl={canvasCtrl}
           onViewportChange={v => setZoomDisplay(Math.round(v.scale * 100))}
           updateElement={updateElement}
+          updateElementLive={updateElementLive}
           updateElementsLive={updateElementsLive}
           onElementPointerDown={onElementPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
+          onCanvasPointerDown={onCanvasPointerDown}
           onMarqueeEnd={(ids) => {
             setSelectedIds(ids);
             if (ids.length === 1) setPrimarySelectedId(ids[0]);
@@ -347,8 +504,14 @@ export default function EditorScreen({ canvasSize, onFinish }) {
         selectedId={selectedId}
         selectedIds={selectedIds}
         updateElement={updateElement}
-        updateElements={updateElement}
+        updateElements={updateElements}
         deleteElements={deleteElements}
+        defs={defs}
+        onAddGradient={addGradient}
+        onAddKeyframe={addKeyframe}
+        onAddFont={addFont}
+        onRemoveFont={removeFont}
+        onOpenCodeEditor={el => setCodeEditElement(el)}
       />
 
       {showKeymap && (
@@ -358,6 +521,41 @@ export default function EditorScreen({ canvasSize, onFinish }) {
           onImport={importKeymap}
           onReset={resetToDefault}
           onClose={() => setShowKeymap(false)}
+        />
+      )}
+
+      {showCollection && (
+        <CollectionModal
+          onInsert={handleInsertFromCollection}
+          onClose={() => setShowCollection(false)}
+        />
+      )}
+
+      {showPasteSVG && (
+        <PasteSVGModal
+          onAdd={handlePasteSVG}
+          onClose={() => setShowPasteSVG(false)}
+        />
+      )}
+
+      {showVariables && (
+        <VariablesPanel
+          variables={defs.variables}
+          onAdd={addVariable}
+          onUpdate={updateVariable}
+          onRemove={removeVariable}
+          onClose={() => setShowVariables(false)}
+        />
+      )}
+
+      {codeEditElement && (
+        <CodeEditor
+          element={codeEditElement}
+          onSave={({ rawStyle, rawAttrs, props }) => {
+            updateElement(codeEditElement.id, { rawStyle, rawAttrs, ...(props || {}) });
+            setCodeEditElement(null);
+          }}
+          onClose={() => setCodeEditElement(null)}
         />
       )}
     </div>

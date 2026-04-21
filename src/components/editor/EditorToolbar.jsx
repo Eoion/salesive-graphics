@@ -1,27 +1,28 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import DuotoneIcon from '../DuotoneIcon.jsx';
 import { ICONS } from '../../editor/duotoneIcons.js';
+import { loadCollection } from '../../lib/collection.js';
 
 const TOOLS = [
-  { id: 'select',      svg: ICONS.select,      label: 'Select' },
-  { id: 'rect',        svg: ICONS.rect,        label: 'Rectangle' },
-  { id: 'circle',      svg: ICONS.circle,      label: 'Circle' },
-  { id: 'polygon',     svg: ICONS.polygon,     label: 'Polygon' },
-  { id: 'star',        svg: ICONS.star,        label: 'Star' },
-  { id: 'text',        svg: ICONS.text,        label: 'Text' },
-  { id: 'image',       svg: ICONS.image,       label: 'Image' },
-  { id: 'line',        svg: ICONS.line,        label: 'Line' },
-  { id: 'arrow',       svg: ICONS.arrow,       label: 'Arrow' },
-  { id: 'eyedropper',  svg: ICONS.eyedropper,  label: 'Eyedropper' },
+  { id: 'select',     svg: ICONS.select,     label: 'Select',  key: 'V' },
+  { id: 'rect',       svg: ICONS.rect,       label: 'Rect',    key: 'U' },
+  { id: 'circle',     svg: ICONS.circle,     label: 'Circle',  key: 'E' },
+  { id: 'polygon',    svg: ICONS.polygon,    label: 'Polygon', key: 'P' },
+  { id: 'star',       svg: ICONS.star,       label: 'Star',    key: 'S' },
+  { id: 'text',       svg: ICONS.text,       label: 'Text',    key: 'T' },
+  { id: 'image',      svg: ICONS.image,      label: 'Image',   key: 'I' },
+  { id: 'line',       svg: ICONS.line,       label: 'Line',    key: 'L' },
+  { id: 'arrow',      svg: ICONS.arrow,      label: 'Arrow',   key: 'A' },
+  { id: 'eyedropper', svg: ICONS.eyedropper, label: 'Sample',  key: 'K' },
 ];
 
 const ALIGN_BTNS = [
-  { dir: 'left',    title: 'Align left',     icon: ICONS.alignLeft    },
-  { dir: 'centerH', title: 'Center horizontal', icon: ICONS.alignCenterH },
-  { dir: 'right',   title: 'Align right',    icon: ICONS.alignRight   },
-  { dir: 'top',     title: 'Align top',      icon: ICONS.alignTop     },
-  { dir: 'centerV', title: 'Center vertical', icon: ICONS.alignCenterV  },
-  { dir: 'bottom',  title: 'Align bottom',   icon: ICONS.alignBottom  },
+  { dir: 'left',    title: 'Align left',          icon: ICONS.alignLeft    },
+  { dir: 'centerH', title: 'Center horizontally', icon: ICONS.alignCenterH },
+  { dir: 'right',   title: 'Align right',         icon: ICONS.alignRight   },
+  { dir: 'top',     title: 'Align top',           icon: ICONS.alignTop     },
+  { dir: 'centerV', title: 'Center vertically',   icon: ICONS.alignCenterV  },
+  { dir: 'bottom',  title: 'Align bottom',        icon: ICONS.alignBottom  },
 ];
 
 const TYPE_DOT = {
@@ -32,34 +33,41 @@ const TYPE_DOT = {
 };
 
 function layerLabel(el) {
-  if (el.type === 'text' && el.text) return el.text.slice(0, 18) || 'Text';
+  if (el.type === 'text' && el.text) return el.text.slice(0, 20) || 'Text';
   if (el.type === 'image' && el.href) return 'Image';
-  const typeLabel = { rect: 'Rectangle', circle: 'Circle', line: 'Line', image: 'Image', text: 'Text', polygon: 'Polygon', star: 'Star', arrow: 'Arrow' }[el.type] || el.type;
+  const typeLabel = { rect: 'Rect', circle: 'Circle', line: 'Line', image: 'Image', text: 'Text', polygon: 'Polygon', star: 'Star', arrow: 'Arrow' }[el.type] || el.type;
   const num = el.id.match(/_(\d+)$/)?.[1] || '';
   return `${typeLabel}${num ? ' ' + num : ''}`;
 }
 
-function ToolBtn({ tool, active, onClick, shortcut }) {
+const iconBtnBase = {
+  display: 'flex', alignItems: 'center', justifyContent: 'center',
+  padding: '5px', borderRadius: 5, border: '1px solid var(--border)',
+  background: 'var(--bg-raised)', color: 'var(--text-secondary)',
+  cursor: 'pointer', transition: 'all 0.1s', flexShrink: 0,
+};
+
+function IconBtn({ icon, title, onClick, danger, accent, disabled }) {
   return (
     <button
-      onClick={() => onClick(tool.id)}
-      title={`${tool.label} (${shortcut})`}
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
       style={{
-        width: '100%', display: 'flex', alignItems: 'center', gap: 9,
-        padding: '7px 12px', borderRadius: 7, border: 'none', cursor: 'pointer',
-        background: active ? 'var(--accent-dim)' : 'transparent',
-        outline: active ? '1px solid rgba(13,101,217,0.4)' : '1px solid transparent',
-        transition: 'all 0.1s',
-        color: active ? 'var(--accent)' : 'var(--text-secondary)',
+        ...iconBtnBase,
+        borderColor: danger ? 'rgba(239,68,68,0.3)' : accent ? 'rgba(13,101,217,0.3)' : 'var(--border)',
+        color: danger ? 'var(--red)' : accent ? 'var(--accent)' : 'var(--text-secondary)',
+        background: danger ? 'rgba(239,68,68,0.08)' : accent ? 'var(--accent-dim)' : 'var(--bg-raised)',
+        opacity: disabled ? 0.35 : 1,
+        cursor: disabled ? 'default' : 'pointer',
       }}
-      onMouseEnter={e => { if (!active) e.currentTarget.style.background = 'var(--bg-hover)'; }}
-      onMouseLeave={e => { if (!active) e.currentTarget.style.background = 'transparent'; }}
+      onMouseEnter={e => { if (!disabled) { e.currentTarget.style.borderColor = danger ? 'var(--red)' : 'var(--accent)'; e.currentTarget.style.color = danger ? 'var(--red)' : 'var(--accent)'; }}}
+      onMouseLeave={e => {
+        e.currentTarget.style.borderColor = danger ? 'rgba(239,68,68,0.3)' : accent ? 'rgba(13,101,217,0.3)' : 'var(--border)';
+        e.currentTarget.style.color = danger ? 'var(--red)' : accent ? 'var(--accent)' : 'var(--text-secondary)';
+      }}
     >
-      <DuotoneIcon svg={tool.svg} size={14} />
-      <span style={{ fontSize: 12, fontWeight: active ? 600 : 400, flex: 1, textAlign: 'left' }}>
-        {tool.label}
-      </span>
-      <span style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'DM Mono, monospace' }}>{shortcut}</span>
+      <DuotoneIcon svg={icon} size={13} />
     </button>
   );
 }
@@ -73,149 +81,173 @@ export default function EditorToolbar({
   alignElement, reorderElement, canvasSize,
   canUndo, canRedo, undo, redo,
   bindings, onOpenKeymap,
+  onDuplicate,
+  onSaveToCollection, onOpenCollection,
+  onTextEdit,
 }) {
   const selectedEls = elements.filter(e => selectedIds.includes(e.id));
   const [dragOverId, setDragOverId] = useState(null);
+  const [collectionVersion, setCollectionVersion] = useState(0);
   const layerScrollRef = useRef();
 
-  // Auto-scroll layers list to show the selected element
+  const collection = useMemo(() => loadCollection(), [collectionVersion]);
+  const isInCollection = useMemo(() =>
+    selectedEls.length > 0 && collection.some(item =>
+      item.elements.some(e => selectedEls.some(sel => sel.id === e.id))
+    ), [collection, selectedEls]);
+
+  function handleSaveToCollection() {
+    onSaveToCollection?.(selectedEls);
+    setCollectionVersion(v => v + 1);
+  }
+
   useEffect(() => {
     if (!selectedId || !layerScrollRef.current) return;
     const row = layerScrollRef.current.querySelector(`[data-layerid="${selectedId}"]`);
     if (row) row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }, [selectedId]);
 
-  // Batch lock/unlock/delete helpers
-  const hasVisible = selectedEls.some(el => el.visible !== false);
+  const hasVisible  = selectedEls.some(el => el.visible !== false);
   const hasUnlocked = selectedEls.some(el => !el.locked);
-
-  const actionButtons = selectedEls.length > 0 ? [
-    { svg: ICONS.layers,  label: 'Forward',  action: () => selectedEls.forEach(el => bringForward(el.id)) },
-    { svg: ICONS.layers,  label: 'Backward', action: () => selectedEls.forEach(el => sendBackward(el.id)) },
-    { svg: hasVisible ? ICONS.close : ICONS.eye,
-      label: hasVisible ? 'Hide' : 'Show',
-      action: () => updateElements(selectedEls.map(e => e.id), { visible: hasVisible ? false : true }) },
-    { svg: hasUnlocked ? ICONS.lock : ICONS.unlock,
-      label: hasUnlocked ? 'Lock' : 'Unlock',
-      action: () => updateElements(selectedEls.map(e => e.id), { locked: hasUnlocked ? true : false }) },
-  ] : [];
-
-  const SECTION_LABEL = {
-    fontSize: 10, fontWeight: 600, color: 'var(--text-muted)',
-    textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 7,
-  };
-
-  const ICON_BTN = {
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-    padding: '6px', borderRadius: 6, border: '1px solid var(--border)',
-    background: 'var(--bg-raised)', color: 'var(--text-secondary)',
-    cursor: 'pointer', transition: 'all 0.1s',
-  };
 
   return (
     <aside style={{
-      width: 240, background: 'var(--bg-surface)',
+      width: 220, background: 'var(--bg-surface)',
       borderRight: '1px solid var(--border)',
       display: 'flex', flexDirection: 'column', overflow: 'hidden', flexShrink: 0,
     }}>
-      {/* Tools */}
-      <div style={{ padding: '10px 10px 6px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
-        <div style={SECTION_LABEL}>Tools</div>
-        {TOOLS.map(t => (
-          <ToolBtn key={t.id} tool={t} active={activeTool === t.id} onClick={setActiveTool}
-            shortcut={bindings?.[t.id] || ''} />
-        ))}
+
+      {/* ── Tools (compact 2-col grid) ── */}
+      <div style={{ padding: '8px 8px 6px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+        <div style={{
+          display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 3,
+        }}>
+          {TOOLS.map(t => {
+            const active = activeTool === t.id;
+            const shortcut = bindings?.[t.id] || t.key || '';
+            return (
+              <button
+                key={t.id}
+                onClick={() => setActiveTool(t.id)}
+                title={`${t.label} (${shortcut})`}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  padding: '5px 8px', borderRadius: 6, border: 'none', cursor: 'pointer',
+                  background: active ? 'var(--accent-dim)' : 'transparent',
+                  outline: active ? '1px solid rgba(13,101,217,0.35)' : '1px solid transparent',
+                  color: active ? 'var(--accent)' : 'var(--text-secondary)',
+                  transition: 'all 0.1s',
+                }}
+                onMouseEnter={e => { if (!active) e.currentTarget.style.background = 'var(--bg-hover)'; }}
+                onMouseLeave={e => { if (!active) e.currentTarget.style.background = 'transparent'; }}
+              >
+                <DuotoneIcon svg={t.svg} size={13} />
+                <span style={{ fontSize: 11, fontWeight: active ? 600 : 400, flex: 1, textAlign: 'left' }}>{t.label}</span>
+                <span style={{ fontSize: 9, color: 'var(--text-muted)', fontFamily: 'DM Mono, monospace' }}>{shortcut}</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
-      {/* Selected actions */}
+      {/* ── Element actions (shown when selected) ── */}
       {selectedEls.length > 0 && (
-        <div style={{ padding: '10px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
-          <div style={SECTION_LABEL}>
-            {selectedEls.length > 1 ? `${selectedEls.length} elements` : 'Element'}
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 5 }}>
-            {actionButtons.map(({ svg, label, action }) => (
-              <button key={label} onClick={action} style={{
-                display: 'flex', alignItems: 'center', gap: 5,
-                padding: '5px 8px', borderRadius: 6, border: '1px solid var(--border)',
-                background: 'var(--bg-raised)', color: 'var(--text-secondary)',
-                cursor: 'pointer', fontSize: 11,
-              }}
-                onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)'; }}
-                onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-secondary)'; }}
-              >
-                <DuotoneIcon svg={svg} size={11} />
-                {label}
-              </button>
-            ))}
-          </div>
-          <button onClick={() => deleteElements(selectedEls.map(e => e.id))} style={{
-            display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'center',
-            width: '100%', marginTop: 6, padding: '6px', borderRadius: 7,
-            background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)',
-            color: 'var(--red)', cursor: 'pointer', fontSize: 11, fontWeight: 600,
-          }}>
-            <DuotoneIcon svg={ICONS.delete} size={12} style={{ color: 'var(--red)' }} />
-            Delete {selectedEls.length > 1 ? 'elements' : 'element'}
-          </button>
-        </div>
-      )}
-
-      {/* Alignment */}
-      {selectedEls.length === 1 && canvasSize && (
-        <div style={{ padding: '10px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
-          <div style={SECTION_LABEL}>Align to canvas</div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 5 }}>
-            {ALIGN_BTNS.map(({ dir, title, icon }) => (
-              <button key={dir} title={title}
-                onClick={() => alignElement(selectedId, dir, canvasSize.width, canvasSize.height)}
-                style={ICON_BTN}
-                onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)'; }}
-                onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-secondary)'; }}
-              >
-                <DuotoneIcon svg={icon} size={13} />
-              </button>
-            ))}
-          </div>
-          <button title="Center on canvas"
-            onClick={() => alignElement(selectedId, 'center', canvasSize.width, canvasSize.height)}
-            style={{ ...ICON_BTN, width: '100%', marginTop: 5, gap: 5, fontSize: 11 }}
-            onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)'; }}
-            onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-secondary)'; }}
-          >
-            Center on canvas
-          </button>
-        </div>
-      )}
-
-      {/* Layers */}
-      <div style={{ padding: '10px 10px 4px', flexShrink: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <DuotoneIcon svg={ICONS.layers} size={12} />
-          <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
-            Layers ({elements.length})
+        <div style={{ padding: '6px 8px 7px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+          <span style={{ fontSize: 9, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', display: 'block', marginBottom: 5 }}>
+            {selectedEls.length > 1 ? `${selectedEls.length} selected` : selectedEls[0]?.id}
           </span>
+          {/* Row 1: labeled actions */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 3, marginBottom: 3 }}>
+            {[
+              { icon: ICONS.paste,  label: 'Duplicate', title: 'Duplicate (Ctrl+D)',         onClick: onDuplicate, accent: true },
+              { icon: ICONS.delete, label: 'Delete',    title: 'Delete (Del)',                onClick: () => deleteElements(selectedEls.map(e => e.id)), danger: true },
+              { icon: hasVisible ? ICONS.close : ICONS.eye,       label: hasVisible ? 'Hide' : 'Show',       title: hasVisible ? 'Hide (Ctrl+Shift+H)' : 'Show', onClick: () => updateElements(selectedEls.map(e => e.id), { visible: !hasVisible }) },
+              { icon: hasUnlocked ? ICONS.lock : ICONS.unlock,    label: hasUnlocked ? 'Lock' : 'Unlock',    title: hasUnlocked ? 'Lock (Ctrl+L)' : 'Unlock (Ctrl+L)', onClick: () => updateElements(selectedEls.map(e => e.id), { locked: hasUnlocked }) },
+            ].map(({ icon, label, title, onClick, accent, danger }) => (
+              <button key={label} onClick={onClick} title={title} style={{
+                display: 'flex', alignItems: 'center', gap: 5,
+                padding: '5px 7px', borderRadius: 6, cursor: 'pointer',
+                border: danger ? '1px solid rgba(239,68,68,0.25)' : accent ? '1px solid rgba(13,101,217,0.25)' : '1px solid var(--border)',
+                background: danger ? 'rgba(239,68,68,0.07)' : accent ? 'var(--accent-dim)' : 'var(--bg-raised)',
+                color: danger ? 'var(--red)' : accent ? 'var(--accent)' : 'var(--text-secondary)',
+                fontSize: 11,
+              }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = danger ? 'var(--red)' : 'var(--accent)'; e.currentTarget.style.color = danger ? 'var(--red)' : 'var(--accent)'; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = danger ? 'rgba(239,68,68,0.25)' : accent ? 'rgba(13,101,217,0.25)' : 'var(--border)'; e.currentTarget.style.color = danger ? 'var(--red)' : accent ? 'var(--accent)' : 'var(--text-secondary)'; }}
+              >
+                <DuotoneIcon svg={icon} size={12} />{label}
+              </button>
+            ))}
+          </div>
+          {/* Row 2: layer order + collection + text edit */}
+          <div style={{ display: 'flex', gap: 3 }}>
+            <IconBtn icon={ICONS.layers} title="Bring forward" onClick={() => selectedEls.forEach(el => bringForward(el.id))} />
+            <IconBtn icon={ICONS.layers} title="Send backward" onClick={() => selectedEls.forEach(el => sendBackward(el.id))} />
+            {onSaveToCollection && (
+              <IconBtn
+                icon={ICONS.bookmark}
+                title={isInCollection ? 'Already in collection (Ctrl+Shift+B to update)' : 'Save to Collection (Ctrl+Shift+B)'}
+                accent={isInCollection}
+                onClick={handleSaveToCollection}
+              />
+            )}
+            {selectedEls.length === 1 && selectedEls[0]?.type === 'text' && onTextEdit && (
+              <IconBtn icon={ICONS.pencil} title="Edit text (F2 / double-click)" accent onClick={() => onTextEdit(selectedEls[0].id)} />
+            )}
+          </div>
         </div>
+      )}
+
+      {/* ── Align (icon grid, only when single element selected) ── */}
+      {selectedEls.length === 1 && canvasSize && (
+        <div style={{ padding: '5px 8px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+          <div style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
+            {ALIGN_BTNS.map(({ dir, title, icon }) => (
+              <IconBtn key={dir} icon={icon} title={title}
+                onClick={() => alignElement(selectedId, dir, canvasSize.width, canvasSize.height)} />
+            ))}
+            <button
+              title="Center on canvas"
+              onClick={() => alignElement(selectedId, 'center', canvasSize.width, canvasSize.height)}
+              style={{
+                ...iconBtnBase, flex: 1, fontSize: 9, fontWeight: 600,
+                padding: '5px 4px', whiteSpace: 'nowrap',
+                color: 'var(--text-muted)',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)'; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-muted)'; }}
+            >⊕</button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Layers header ── */}
+      <div style={{
+        padding: '5px 8px 4px', flexShrink: 0,
+        display: 'flex', alignItems: 'center', gap: 4,
+        borderBottom: '1px solid rgba(255,255,255,0.04)',
+      }}>
+        <DuotoneIcon svg={ICONS.layers} size={11} />
+        <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', flex: 1 }}>
+          Layers {elements.length > 0 && `(${elements.length})`}
+        </span>
+        {onOpenCollection && (
+          <IconBtn icon={ICONS.collection} title="Collection" onClick={onOpenCollection} accent />
+        )}
       </div>
-      <div ref={layerScrollRef} style={{ flex: 1, overflowY: 'auto' }}>
+
+      {/* ── Layers list (gets all remaining space) ── */}
+      <div ref={layerScrollRef} style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
         {[...elements].reverse().map(el => {
           const isSelected = selectedIds.includes(el.id);
           const isDragOver = el.id === dragOverId;
           const dot = TYPE_DOT[el.type] || TYPE_DOT.default;
           return (
-            <div key={el.id}
+            <div
+              key={el.id}
               data-layerid={el.id}
               draggable
-              onClick={() => {
-                // Click behavior: if shift held, toggle; otherwise select only this one
-                if (selectedIds.includes(el.id)) {
-                  // Clicking already-selected in multi-select mode requires explicit handling
-                  setSelectedId(el.id);
-                } else {
-                  setSelectedId(el.id);
-                }
-                setActiveTool('select');
-              }}
+              onClick={() => { setSelectedId(el.id); setActiveTool('select'); }}
               onDragStart={e => {
                 e.dataTransfer.setData('text/plain', el.id);
                 e.dataTransfer.effectAllowed = 'move';
@@ -231,7 +263,8 @@ export default function EditorToolbar({
                 if (fromId !== el.id) reorderElement(fromId, el.id);
               }}
               style={{
-                display: 'flex', alignItems: 'center', gap: 6, padding: '5px 10px 5px 6px',
+                display: 'flex', alignItems: 'center', gap: 5,
+                padding: '4px 8px 4px 5px',
                 cursor: 'pointer',
                 background: isSelected ? 'var(--accent-dim)' : 'transparent',
                 borderLeft: `2px solid ${isSelected ? 'var(--accent)' : 'transparent'}`,
@@ -242,9 +275,12 @@ export default function EditorToolbar({
               onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = 'var(--bg-hover)'; }}
               onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = 'transparent'; }}
             >
-              {/* Drag handle */}
-              <span style={{ fontSize: 11, color: 'var(--text-muted)', cursor: 'grab', flexShrink: 0, lineHeight: 1, userSelect: 'none' }}>⠿</span>
-              <div style={{ width: 7, height: 7, borderRadius: 2, background: dot, flexShrink: 0 }} />
+              <span style={{ fontSize: 10, color: 'var(--text-muted)', cursor: 'grab', flexShrink: 0, lineHeight: 1, userSelect: 'none' }}>⠿</span>
+              <span style={{ color: dot, flexShrink: 0, lineHeight: 0 }}>
+                {ICONS[el.type]
+                  ? <DuotoneIcon svg={ICONS[el.type]} size={12} />
+                  : <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: 2, background: dot }} />}
+              </span>
               <span style={{
                 fontSize: 11, fontFamily: 'DM Mono, monospace',
                 color: isSelected ? 'var(--accent)' : 'var(--text-secondary)',
@@ -257,34 +293,59 @@ export default function EditorToolbar({
           );
         })}
         {elements.length === 0 && (
-          <div style={{ padding: '12px', fontSize: 11, color: 'var(--text-muted)', textAlign: 'center' }}>
+          <div style={{ padding: '16px 12px', fontSize: 11, color: 'var(--text-muted)', textAlign: 'center' }}>
             No elements yet
           </div>
         )}
       </div>
 
-      {/* Undo / Redo */}
-      <div style={{ padding: '10px', borderTop: '1px solid var(--border)', display: 'flex', gap: 6, flexShrink: 0 }}>
-        <button onClick={undo} disabled={!canUndo} title="Undo" style={{
-          flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
-          padding: '6px', borderRadius: 7,
-          background: 'var(--bg-raised)', border: '1px solid var(--border)',
-          color: canUndo ? 'var(--text-secondary)' : 'var(--text-muted)',
-          cursor: canUndo ? 'pointer' : 'default', fontSize: 11,
-          opacity: canUndo ? 1 : 0.4,
-        }}>
+      {/* ── Undo / Redo footer ── */}
+      <div style={{
+        padding: '5px 8px', borderTop: '1px solid var(--border)', flexShrink: 0,
+        display: 'flex', gap: 4,
+      }}>
+        <button
+          onClick={undo} disabled={!canUndo}
+          title="Undo (Ctrl+Z)"
+          style={{
+            flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
+            padding: '5px 0', borderRadius: 6, border: '1px solid var(--border)',
+            background: 'var(--bg-raised)', color: canUndo ? 'var(--text-secondary)' : 'var(--text-muted)',
+            cursor: canUndo ? 'pointer' : 'default', fontSize: 11, opacity: canUndo ? 1 : 0.4,
+          }}
+          onMouseEnter={e => { if (canUndo) { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)'; }}}
+          onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = canUndo ? 'var(--text-secondary)' : 'var(--text-muted)'; }}
+        >
           <DuotoneIcon svg={ICONS.undo} size={12} /> Undo
         </button>
-        <button onClick={redo} disabled={!canRedo} title="Redo" style={{
-          flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
-          padding: '6px', borderRadius: 7,
-          background: 'var(--bg-raised)', border: '1px solid var(--border)',
-          color: canRedo ? 'var(--text-secondary)' : 'var(--text-muted)',
-          cursor: canRedo ? 'pointer' : 'default', fontSize: 11,
-          opacity: canRedo ? 1 : 0.4,
-        }}>
+        <button
+          onClick={redo} disabled={!canRedo}
+          title="Redo (Ctrl+Shift+Z)"
+          style={{
+            flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
+            padding: '5px 0', borderRadius: 6, border: '1px solid var(--border)',
+            background: 'var(--bg-raised)', color: canRedo ? 'var(--text-secondary)' : 'var(--text-muted)',
+            cursor: canRedo ? 'pointer' : 'default', fontSize: 11, opacity: canRedo ? 1 : 0.4,
+          }}
+          onMouseEnter={e => { if (canRedo) { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)'; }}}
+          onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = canRedo ? 'var(--text-secondary)' : 'var(--text-muted)'; }}
+        >
           <DuotoneIcon svg={ICONS.redo} size={12} /> Redo
         </button>
+        {onOpenKeymap && (
+          <button onClick={onOpenKeymap} title="Keyboard shortcuts"
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              padding: '5px 7px', borderRadius: 6, border: '1px solid var(--border)',
+              background: 'var(--bg-raised)', color: 'var(--text-muted)',
+              cursor: 'pointer', flexShrink: 0,
+            }}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)'; }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-muted)'; }}
+          >
+            <DuotoneIcon svg={ICONS.layers} size={12} />
+          </button>
+        )}
       </div>
     </aside>
   );

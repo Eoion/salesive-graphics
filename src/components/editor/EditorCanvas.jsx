@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState } from "react";
+import { useRef, useEffect, useLayoutEffect, useState } from "react";
 import SelectionHandles from "./SelectionHandles.jsx";
 import { polygonPoints, starPoints, arrowheadPoints } from "../../editor/shapeHelpers.js";
 
@@ -34,6 +34,17 @@ function rectsIntersect(a, b) {
         a.y + a.height < b.y ||
         a.y > b.y + b.height
     );
+}
+
+// Returns the visual bounding box, adjusting x for SVG text anchor offsets
+function elBounds(el) {
+    if (el.type === 'text') {
+        const vx = el.textAnchor === 'middle' ? el.x - el.width / 2
+                 : el.textAnchor === 'end'    ? el.x - el.width
+                 : el.x;
+        return { x: vx, y: el.y, width: el.width, height: el.height };
+    }
+    return { x: el.x, y: el.y, width: el.width, height: el.height };
 }
 
 // ── Element renderers ─────────────────────────────────────────────────────────
@@ -284,6 +295,7 @@ const PICK_COLORS = {
 
 export default function EditorCanvas({
     elements,
+    defs,
     selectedId,
     selectedIds,
     setSelectedIds,
@@ -295,6 +307,7 @@ export default function EditorCanvas({
     onMarqueeEnd,
     activeTool,
     updateElement,
+    updateElementLive,
     scaleRef,
     canvasRef,
     canvasCtrl,
@@ -364,6 +377,7 @@ export default function EditorCanvas({
     useEffect(() => {
         if (!canvasCtrl) return;
         canvasCtrl.current = {
+            textEdit: (id) => setTextEditId(id),
             fitViewport,
             zoomIn: () =>
                 setViewport((v) => {
@@ -455,6 +469,24 @@ export default function EditorCanvas({
         };
     }, []);
 
+    // Auto-measure text elements and sync width/height to actual rendered bbox
+    useLayoutEffect(() => {
+        const svg = svgRef.current;
+        if (!svg || !updateElementLive) return;
+        for (const el of elements) {
+            if (el.type !== 'text') continue;
+            const node = svg.querySelector(`[id="${el.id}"]`);
+            if (!node) continue;
+            try {
+                const bbox = node.getBBox();
+                if (bbox.width < 1) continue;
+                if (Math.abs(bbox.width - el.width) > 1 || Math.abs(bbox.height - el.height) > 1) {
+                    updateElementLive(el.id, { width: bbox.width, height: bbox.height });
+                }
+            } catch {}
+        }
+    }, [elements]);
+
     const selectedEl = elements.find((e) => e.id === selectedId) || null;
     const textEditEl = elements.find((e) => e.id === textEditId) || null;
     const canvasRect = svgRef.current?.getBoundingClientRect() || null;
@@ -538,24 +570,25 @@ export default function EditorCanvas({
 
     // ── Marquee selection ─────────────────────────────────────────────────────
     function handleSvgPointerDown(e) {
-        if (activeTool !== 'select' || isPanMode || isOverlayMode) return;
+        if (isPanMode || isOverlayMode) return;
 
-        // Start marquee only if clicking empty canvas (no element target with ID)
-        const targetId = e.target?.closest('g')?.id;
-        if (!targetId) {
-            e.preventDefault();
-            const svgRect = svgRef.current?.getBoundingClientRect();
-            if (!svgRect) return;
-            const scale = scaleRef.current || 1;
-            const startX = (e.clientX - svgRect.left) / scale;
-            const startY = (e.clientY - svgRect.top) / scale;
-            marqueeStartRef.current = { x: startX, y: startY };
-            setMarquee({ x: startX, y: startY, w: 0, h: 0 });
-            setSelectedIds([]);
-        } else if (onCanvasPointerDown) {
-            // Clicked an element — pass to existing handler
-            onCanvasPointerDown(e);
+        // Non-select tool: place a new element at click position
+        if (activeTool !== 'select') {
+            onCanvasPointerDown?.(e);
+            return;
         }
+
+        // Select mode: start marquee on empty canvas.
+        // Element clicks stop propagation before reaching here.
+        e.preventDefault();
+        const svgRect = svgRef.current?.getBoundingClientRect();
+        if (!svgRect) return;
+        const scale = scaleRef.current || 1;
+        const startX = (e.clientX - svgRect.left) / scale;
+        const startY = (e.clientY - svgRect.top) / scale;
+        marqueeStartRef.current = { x: startX, y: startY };
+        setMarquee({ x: startX, y: startY, width: 0, height: 0 });
+        setSelectedIds([]);
     }
 
     function handleSvgPointerMove(e) {
@@ -571,7 +604,7 @@ export default function EditorCanvas({
         const y = Math.min(start.y, curY);
         const w = Math.abs(curX - start.x);
         const h = Math.abs(curY - start.y);
-        setMarquee({ x, y, w, h });
+        setMarquee({ x, y, width: w, height: h });
     }
 
     function handleSvgPointerUp() {
@@ -583,7 +616,7 @@ export default function EditorCanvas({
         const intersecting = elements.filter(el =>
             el.visible !== false &&
             !el.locked &&
-            rectsIntersect(marqueeRect, el)
+            rectsIntersect(marqueeRect, elBounds(el))
         );
 
         setSelectedIds(intersecting.map(el => el.id));
@@ -643,6 +676,24 @@ export default function EditorCanvas({
                     onPointerMove={handleSvgPointerMove}
                     onPointerUp={() => handleSvgPointerUp()}
                 >
+                    {/* Defs: gradients, variables, keyframes */}
+                    <defs>
+                        {defs?.gradients?.map(g => {
+                            const stops = g.stops?.map((s, i) =>
+                                <stop key={i} offset={s.offset} stopColor={s.stopColor} stopOpacity={s.stopOpacity ?? 1} />
+                            );
+                            if (g.type === 'radial') {
+                                return <radialGradient key={g.id} id={g.id} cx={g.cx || '50%'} cy={g.cy || '50%'} r={g.r || '50%'}>{stops}</radialGradient>;
+                            }
+                            return <linearGradient key={g.id} id={g.id} x1={g.x1 || '0%'} y1={g.y1 || '0%'} x2={g.x2 || '100%'} y2={g.y2 || '0%'}>{stops}</linearGradient>;
+                        })}
+                        {(defs?.variables?.length || defs?.keyframes?.length) ? (
+                            <style>{`
+                                ${defs.variables?.map(v => `--${v.name}: ${v.value};`).join('\n') || ''}
+                                ${defs.keyframes?.map(k => k.css).join('\n') || ''}
+                            `}</style>
+                        ) : null}
+                    </defs>
                     {elements.map((el) => (
                         <g
                             key={el.id}
@@ -655,6 +706,9 @@ export default function EditorCanvas({
                                           : "var(--cursor-move)"
                                       : "var(--cursor-crosshair)",
                                 pointerEvents: el.locked ? "none" : undefined,
+                                ...(el.animation ? {
+                                    animation: `${el.animation.name || el.animation.type} ${el.animation.duration || 1}s ${el.animation.easing || 'ease'} ${el.animation.delay || 0}s ${el.animation.repeat === 'infinite' ? 'infinite' : (el.animation.repeat || 1)} forwards`,
+                                } : {}),
                             }}
                             onPointerEnter={
                                 isOverlayMode
@@ -690,6 +744,20 @@ export default function EditorCanvas({
                                     strokeWidth={12}
                                 />
                             )}
+                            {el.type === "text" && (() => {
+                                const b = elBounds(el);
+                                return (
+                                    <rect
+                                        x={b.x}
+                                        y={b.y}
+                                        width={Math.max(b.width, 1)}
+                                        height={Math.max(b.height, 1)}
+                                        fill="transparent"
+                                        stroke="none"
+                                        transform={rotTransform(el)}
+                                    />
+                                );
+                            })()}
                         </g>
                     ))}
                 </svg>
@@ -712,11 +780,12 @@ export default function EditorCanvas({
                         .map(id => {
                             const el = elements.find(e => e.id === id);
                             if (!el || el.visible === false) return null;
+                            const b = elBounds(el);
                             return (
                                 <rect
                                     key={id}
-                                    x={el.x} y={el.y}
-                                    width={Math.max(el.width, 1)} height={Math.max(el.height, 1)}
+                                    x={b.x} y={b.y}
+                                    width={Math.max(b.width, 1)} height={Math.max(b.height, 1)}
                                     fill="none" stroke="var(--accent)" strokeWidth={1}
                                     transform={rotTransform(el)}
                                     strokeDasharray="4 3"
@@ -725,7 +794,7 @@ export default function EditorCanvas({
                         })}
                     {selectedEl && (
                         <SelectionHandles
-                            el={selectedEl}
+                            el={{ ...selectedEl, ...elBounds(selectedEl) }}
                             onHandlePointerDown={onElementPointerDown}
                         />
                     )}
@@ -746,8 +815,8 @@ export default function EditorCanvas({
                         <rect
                             x={marquee.x}
                             y={marquee.y}
-                            width={marquee.w}
-                            height={marquee.h}
+                            width={marquee.width}
+                            height={marquee.height}
                             fill="rgba(13,101,217,0.1)"
                             stroke="var(--accent)"
                             strokeWidth={1}
@@ -757,21 +826,23 @@ export default function EditorCanvas({
                 )}
 
                 {/* Picker / eyedropper overlay */}
-                {isOverlayMode && hoveredEl && (
+                {isOverlayMode && hoveredEl && (() => {
+                    const pb = elBounds(hoveredEl);
+                    return (
                     <div
                         style={{
                             position: "absolute",
-                            left: viewport.tx + hoveredEl.x * viewport.scale,
-                            top: viewport.ty + hoveredEl.y * viewport.scale,
-                            width: hoveredEl.width * viewport.scale,
-                            height: hoveredEl.height * viewport.scale,
+                            left: pb.x,
+                            top: pb.y,
+                            width: pb.width,
+                            height: pb.height,
                             outline: `2px solid ${pickColor}`,
                             background: `${pickColor}18`,
                             pointerEvents: "none",
                             transform: hoveredEl.rotation
                                 ? `rotate(${hoveredEl.rotation}deg)`
                                 : undefined,
-                            transformOrigin: `${(hoveredEl.width * viewport.scale) / 2}px ${(hoveredEl.height * viewport.scale) / 2}px`,
+                            transformOrigin: `${hoveredEl.width / 2}px ${hoveredEl.height / 2}px`,
                         }}
                     >
                         {/* Label badge / eyedropper swatch */}
@@ -836,7 +907,8 @@ export default function EditorCanvas({
                             />
                         ))}
                     </div>
-                )}
+                    );
+                })()}
 
                 {/* Floating text editor */}
                 {textEditEl && (
@@ -849,24 +921,6 @@ export default function EditorCanvas({
                     />
                 )}
 
-                {/* Canvas size badge */}
-                <div
-                    style={{
-                        position: "absolute",
-                        bottom: 12,
-                        right: 12,
-                        pointerEvents: "none",
-                        background: "rgba(10,10,12,0.8)",
-                        border: "1px solid var(--border)",
-                        borderRadius: 6,
-                        padding: "3px 8px",
-                        fontSize: 10,
-                        color: "var(--text-muted)",
-                        fontFamily: "DM Mono, monospace",
-                    }}
-                >
-                    {canvasSize.width} × {canvasSize.height}
-                </div>
             </div>
         </div>
     );

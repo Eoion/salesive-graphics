@@ -81,6 +81,7 @@ export function useEditorInteractions({
   deleteElements,
   activeTool,
   addElement,
+  onAfterAddElement,
   canvasRef,
   scaleRef,
   canvasSize,
@@ -102,6 +103,7 @@ export function useEditorInteractions({
 
     // Shift+click: toggle selection and return (no drag/resize starts)
     if (e.shiftKey) {
+      e.stopPropagation();
       toggleSelectedId(elId);
       return;
     }
@@ -222,6 +224,7 @@ export function useEditorInteractions({
 
     const el = makeElement(activeTool, canvasSize.width, canvasSize.height);
     addElement({ ...el, x, y });
+    onAfterAddElement?.(el.id);
   }
 
   return { onElementPointerDown, onPointerMove, onPointerUp, onCanvasPointerDown };
