@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef } from 'react';
 import { AlignLeft, AlignCenter, AlignRight } from 'lucide-react';
 import ColorPicker from '../ColorPicker.jsx';
 import DuotoneIcon from '../DuotoneIcon.jsx';
@@ -129,13 +129,13 @@ function FontAutocomplete({ defs, onAddFont, onSelect }) {
   const inputRef = useRef(null);
   const listRef = useRef(null);
 
-  const loaded = (defs?.fonts || []).map(f => f.name);
+  const loaded = (defs?.fonts || [])
+    .map(f => f?.name)
+    .filter(name => typeof name === 'string' && name.trim());
   const suggestions = query.trim().length < 1 ? [] :
     GOOGLE_FONTS
       .filter(f => f.toLowerCase().includes(query.toLowerCase()) && !loaded.includes(f))
       .slice(0, 10);
-
-  useEffect(() => { setCursor(0); }, [query]);
 
   function commit(name) {
     onAddFont?.({ type: 'google', name });
@@ -158,7 +158,7 @@ function FontAutocomplete({ defs, onAddFont, onSelect }) {
         ref={inputRef}
         placeholder="Search Google Fonts…"
         value={query}
-        onChange={e => { setQuery(e.target.value); setOpen(true); }}
+        onChange={e => { setQuery(e.target.value); setCursor(0); setOpen(true); }}
         onFocus={() => setOpen(true)}
         onBlur={() => setTimeout(() => setOpen(false), 150)}
         onKeyDown={onKey}
@@ -201,6 +201,7 @@ function FontAutocomplete({ defs, onAddFont, onSelect }) {
 export default function EditorPropertiesPanel({ elements, selectedId, selectedIds, updateElement, updateElements, deleteElements, defs, onAddGradient, onAddKeyframe, onAddFont, onRemoveFont, onOpenCodeEditor }) {
   const el = elements.find(e => e.id === selectedId);
   const selectedEls = elements.filter(e => selectedIds.includes(e.id));
+  const safeFonts = (defs?.fonts || []).filter(font => typeof font?.name === 'string' && font.name.trim());
   const [showGradientEditor, setShowGradientEditor] = useState(false);
 
   // Batch helpers
@@ -480,17 +481,17 @@ export default function EditorPropertiesPanel({ elements, selectedId, selectedId
               <Label>Align</Label>
               <div style={{ display: 'flex', gap: 5, marginTop: 6 }}>
                 {[
-                  { value: 'start',  Icon: AlignLeft },
-                  { value: 'middle', Icon: AlignCenter },
-                  { value: 'end',    Icon: AlignRight },
-                ].map(({ value, Icon }) => (
+                  { value: 'start',  icon: <AlignLeft size={13} /> },
+                  { value: 'middle', icon: <AlignCenter size={13} /> },
+                  { value: 'end',    icon: <AlignRight size={13} /> },
+                ].map(({ value, icon }) => (
                   <button key={value} onClick={() => upd({ textAnchor: value })} style={{
                     flex: 1, padding: '5px 0', borderRadius: 6, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
                     background: el.textAnchor === value ? 'var(--accent-dim)' : 'var(--bg-raised)',
                     outline: el.textAnchor === value ? '1px solid var(--accent)' : '1px solid var(--border)',
                     color: el.textAnchor === value ? 'var(--accent)' : 'var(--text-muted)',
                   }}>
-                    <Icon size={13} />
+                    {icon}
                   </button>
                 ))}
               </div>
@@ -505,9 +506,9 @@ export default function EditorPropertiesPanel({ elements, selectedId, selectedId
                     <option key={f} value={f}>{f}</option>
                   ))}
                 </optgroup>
-                {(defs?.fonts || []).length > 0 && (
+                {safeFonts.length > 0 && (
                   <optgroup label="Loaded Fonts">
-                    {(defs.fonts).map(f => (
+                    {safeFonts.map(f => (
                       <option key={f.name} value={f.name}>{f.name}</option>
                     ))}
                   </optgroup>
@@ -762,10 +763,10 @@ export default function EditorPropertiesPanel({ elements, selectedId, selectedId
         )}
 
         {/* Font Library — always visible when fonts are loaded */}
-        {(defs?.fonts || []).length > 0 && (
+        {safeFonts.length > 0 && (
           <Section title="Font Library">
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
-              {defs.fonts.map(f => (
+              {safeFonts.map(f => (
                 <div key={f.name} style={{
                   display: 'flex', alignItems: 'center', gap: 4,
                   background: 'var(--bg-raised)', border: '1px solid var(--border)',

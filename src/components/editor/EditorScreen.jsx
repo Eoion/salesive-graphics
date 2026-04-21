@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import DuotoneIcon from '../DuotoneIcon.jsx';
 import { ICONS } from '../../editor/duotoneIcons.js';
 import { TOOL_ACTIONS } from '../../editor/keymaps/photoshop.js';
@@ -6,12 +6,14 @@ import { useEditorState } from '../../editor/useEditorState.js';
 import { useEditorInteractions } from '../../editor/useEditorInteractions.js';
 import { useKeymap } from '../../editor/useKeymap.js';
 import { useEditorDefs } from '../../editor/useEditorDefs.js';
+import { useEditorAgent } from '../../editor/useEditorAgent.js';
 import { serializeElements } from '../../editor/serializeElements.js';
 import { parseSVGToElements } from '../../editor/parseSVGToElements.js';
 import { addToCollection } from '../../lib/collection.js';
 import { syncCounter, freshId } from '../../editor/editorConstants.js';
 import EditorToolbar from './EditorToolbar.jsx';
 import EditorCanvas from './EditorCanvas.jsx';
+import EditorAiPanel from './EditorAiPanel.jsx';
 import EditorPropertiesPanel from './EditorPropertiesPanel.jsx';
 import KeymapSettings from './KeymapSettings.jsx';
 import CollectionModal from './CollectionModal.jsx';
@@ -19,13 +21,78 @@ import PasteSVGModal from './PasteSVGModal.jsx';
 import VariablesPanel from './VariablesPanel.jsx';
 import CodeEditor from './CodeEditor.jsx';
 
+const SCREENSHOT_MIME_TYPES = {
+  png: 'image/png',
+  jpeg: 'image/jpeg',
+  webp: 'image/webp',
+};
+
+function clampScreenshotDimension(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 1024;
+  return Math.min(Math.max(Math.round(numeric), 128), 2048);
+}
+
+function loadImageFromUrl(url) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Unable to render SVG screenshot.'));
+    image.src = url;
+  });
+}
+
+async function createCanvasScreenshot(svg, canvasSize, options = {}) {
+  const format = options.format || 'png';
+  const mimeType = SCREENSHOT_MIME_TYPES[format] || SCREENSHOT_MIME_TYPES.png;
+  const maxDimension = clampScreenshotDimension(options.maxDimension);
+  const quality = Number.isFinite(Number(options.quality)) ? Number(options.quality) : 0.92;
+  const scale = Math.min(1, maxDimension / Math.max(canvasSize.width, canvasSize.height));
+  const width = Math.max(1, Math.round(canvasSize.width * scale));
+  const height = Math.max(1, Math.round(canvasSize.height * scale));
+  const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+
+  try {
+    const image = await loadImageFromUrl(url);
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Unable to create screenshot canvas.');
+
+    const background = options.background || (mimeType === 'image/jpeg' ? '#ffffff' : null);
+    if (background) {
+      ctx.fillStyle = background;
+      ctx.fillRect(0, 0, width, height);
+    }
+
+    ctx.drawImage(image, 0, 0, width, height);
+
+    return {
+      dataUrl: canvas.toDataURL(mimeType, quality),
+      mimeType,
+      width,
+      height,
+      sourceWidth: canvasSize.width,
+      sourceHeight: canvasSize.height,
+      scale,
+    };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 export default function EditorScreen({ canvasSize, onFinish }) {
   const [activeTool,   setActiveTool]   = useState('select');
+  const [activeDock,   setActiveDock]   = useState('properties');
   const [showKeymap,   setShowKeymap]   = useState(false);
   const [showCollection, setShowCollection] = useState(false);
   const [showPasteSVG, setShowPasteSVG] = useState(false);
   const [showVariables, setShowVariables] = useState(false);
   const [codeEditElement, setCodeEditElement] = useState(null);
+  const [aiDraft, setAiDraft] = useState('');
   const [snapEnabled,  setSnapEnabled]  = useState(false);
   const [zoomDisplay,  setZoomDisplay]  = useState(100);
   const [pickerMode,   setPickerMode]   = useState(false);
@@ -46,15 +113,16 @@ export default function EditorScreen({ canvasSize, onFinish }) {
     alignElement, reorderElement,
   } = useEditorState();
 
-  const { defs, addGradient, updateGradient, removeGradient,
+  const { defs, addGradient,
     addVariable, updateVariable, removeVariable,
-    addKeyframe, removeKeyframe,
-    addFont, removeFont } = useEditorDefs();
+    addKeyframe,
+    addFont, removeFont, setDefsFromImport } = useEditorDefs();
 
   // Inject / remove loaded fonts in the document head whenever the font list changes
   useEffect(() => {
-    const fonts = defs.fonts || [];
-    const activeIds = new Set(fonts.map(f => `font-inject-${f.name.replace(/\s+/g, '-')}`));
+    const fonts = (defs.fonts || []).filter(font => typeof font?.name === 'string' && font.name.trim());
+    const fontDomId = (name) => `font-inject-${name.trim().replace(/\s+/g, '-')}`;
+    const activeIds = new Set(fonts.map(f => fontDomId(f.name)));
 
     // Remove DOM elements for fonts that were deleted
     document.head.querySelectorAll('[id^="font-inject-"]').forEach(el => {
@@ -63,7 +131,7 @@ export default function EditorScreen({ canvasSize, onFinish }) {
 
     // Add DOM elements for newly added fonts
     for (const font of fonts) {
-      const domId = `font-inject-${font.name.replace(/\s+/g, '-')}`;
+      const domId = fontDomId(font.name);
       if (document.getElementById(domId)) continue;
       if (font.type === 'google') {
         const link = document.createElement('link');
@@ -94,6 +162,21 @@ export default function EditorScreen({ canvasSize, onFinish }) {
       canvasRef, scaleRef, canvasSize,
       snapEnabled, gridSize: 8,
     });
+
+  const handleSetActiveTool = useCallback((tool) => {
+    if (tool === 'eyedropper') eyedropperPrevIdRef.current = selectedId;
+    setActiveTool(tool);
+  }, [selectedId]);
+
+  const duplicateElements = useCallback(() => {
+    if (!selectedIds.length) return;
+    syncCounter(elements);
+    const dupes = selectedIds
+      .map(id => elements.find(e => e.id === id))
+      .filter(Boolean)
+      .map(el => ({ ...structuredClone(el), id: freshId(el.type), x: el.x + 10, y: el.y + 10 }));
+    if (dupes.length) addElements(dupes);
+  }, [addElements, elements, selectedIds]);
 
   // ── Keyboard shortcuts ────────────────────────────────────────────────────
   useEffect(() => {
@@ -208,12 +291,25 @@ export default function EditorScreen({ canvasSize, onFinish }) {
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [matchAction, undo, redo, selectedId, selectedIds, deleteElements, elements, setSelectedId, bringForward, sendBackward, pickerMode, updateElement]);
-
-  function handleSetActiveTool(tool) {
-    if (tool === 'eyedropper') eyedropperPrevIdRef.current = selectedId;
-    setActiveTool(tool);
-  }
+  }, [
+    activeTool,
+    bringForward,
+    deleteElements,
+    duplicateElements,
+    elements,
+    handleSetActiveTool,
+    matchAction,
+    pickerMode,
+    redo,
+    selectedId,
+    selectedIds,
+    sendBackward,
+    setSelectedId,
+    setSelectedIds,
+    undo,
+    updateElement,
+    updateElements,
+  ]);
 
   function handleEyedrop(targetId, isShift) {
     const sampled = elements.find(e => e.id === targetId);
@@ -247,29 +343,66 @@ export default function EditorScreen({ canvasSize, onFinish }) {
     canvasCtrl.current.setZoomPct?.(pct);
   }
 
-  function duplicateElements() {
-    if (!selectedIds.length) return;
-    syncCounter(elements);
-    const dupes = selectedIds
-      .map(id => elements.find(e => e.id === id))
-      .filter(Boolean)
-      .map(el => ({ ...structuredClone(el), id: freshId(el.type), x: el.x + 10, y: el.y + 10 }));
-    if (dupes.length) addElements(dupes);
-  }
+  const buildEditorContext = useCallback(() => ({
+    canvasSize,
+    selectedId,
+    selectedIds,
+    elementCount: elements.length,
+    defsSummary: {
+      gradientCount: defs.gradients?.length || 0,
+      variableNames: (defs.variables || []).map(variable => variable.name),
+      keyframeNames: (defs.keyframes || []).map(keyframe => keyframe.name || keyframe.id),
+      fontNames: (defs.fonts || [])
+        .map(font => font?.name)
+        .filter(name => typeof name === 'string' && name.trim()),
+    },
+    svg: serializeElements(elements, canvasSize, defs),
+  }), [canvasSize, defs, elements, selectedId, selectedIds]);
 
-  function insertElementsAtCenter(newEls) {
+  const captureCanvasScreenshot = useCallback(async (options = {}) => {
+    const svg = serializeElements(elements, canvasSize, defs);
+    return createCanvasScreenshot(svg, canvasSize, options);
+  }, [canvasSize, defs, elements]);
+
+  const prepareImportedElements = useCallback((sourceElements, placement = 'original') => {
+    if (!Array.isArray(sourceElements) || !sourceElements.length) return [];
+
     syncCounter(elements);
-    let minX = Infinity, minY = Infinity;
-    for (const el of newEls) { if (el.x < minX) minX = el.x; if (el.y < minY) minY = el.y; }
-    const offsetX = (canvasSize.width / 2) - minX;
-    const offsetY = (canvasSize.height / 2) - minY;
-    for (const el of newEls) {
-      el.id = freshId(el.type);
-      el.x += offsetX;
-      el.y += offsetY;
-      addElement(el);
+    const cloned = structuredClone(sourceElements);
+
+    let offsetX = 0;
+    let offsetY = 0;
+
+    if (placement === 'center') {
+      let minX = Infinity;
+      let minY = Infinity;
+      for (const element of cloned) {
+        minX = Math.min(minX, element.x ?? 0);
+        minY = Math.min(minY, element.y ?? 0);
+      }
+      offsetX = (canvasSize.width / 2) - minX;
+      offsetY = (canvasSize.height / 2) - minY;
     }
-  }
+
+    return cloned.map((element) => ({
+      ...element,
+      id: freshId(element.type || 'element'),
+      x: (element.x ?? 0) + offsetX,
+      y: (element.y ?? 0) + offsetY,
+    }));
+  }, [canvasSize, elements]);
+
+  const addPreparedElements = useCallback((preparedElements, { selectNew = true } = {}) => {
+    if (!preparedElements.length) return [];
+    const previousSelection = [...selectedIds];
+    addElements(preparedElements);
+    if (!selectNew) setSelectedIds(previousSelection);
+    return preparedElements.map(element => element.id);
+  }, [addElements, selectedIds, setSelectedIds]);
+
+  const insertElementsAtCenter = useCallback((newEls) => {
+    addPreparedElements(prepareImportedElements(newEls, 'center'));
+  }, [addPreparedElements, prepareImportedElements]);
 
   function handleSaveToCollection(selectedEls) {
     const name = selectedEls.length === 1
@@ -279,15 +412,125 @@ export default function EditorScreen({ canvasSize, onFinish }) {
   }
 
   function handleInsertFromCollection(item) {
-    const cloned = structuredClone(item.elements);
-    insertElementsAtCenter(cloned);
+    insertElementsAtCenter(item.elements);
     setShowCollection(false);
   }
 
-  function handlePasteSVG(svgText) {
+  const handlePasteSVG = useCallback((svgText) => {
     const { elements: parsed } = parseSVGToElements(svgText);
     if (parsed.length) insertElementsAtCenter(parsed);
-  }
+  }, [insertElementsAtCenter]);
+
+  const clientToolHandlers = useMemo(() => {
+    const handlers = {
+      get_snapshot: async () => ({
+        canvasSize,
+        selectedId,
+        selectedIds,
+        elements,
+        defs,
+        svg: serializeElements(elements, canvasSize, defs),
+      }),
+
+      get_selected_elements: async () => {
+        const selected = elements.filter(el => selectedIds.includes(el.id));
+        return { selected, count: selected.length };
+      },
+
+      get_canvas_screenshot: async (options = {}) => captureCanvasScreenshot(options),
+
+      select_elements: async ({ ids = [] } = {}) => {
+        const validIds = ids.filter(id => elements.some(element => element.id === id));
+        setSelectedIds(validIds);
+        return { selectedIds: validIds, selectedCount: validIds.length };
+      },
+
+      update_elements: async ({ ids = [], patch = {} } = {}) => {
+        const validIds = ids.filter(id => elements.some(element => element.id === id));
+        if (!validIds.length) {
+          return { updatedIds: [], updatedCount: 0 };
+        }
+        updateElements(validIds, patch);
+        return { updatedIds: validIds, updatedCount: validIds.length };
+      },
+
+      delete_elements: async ({ ids = [] } = {}) => {
+        const validIds = ids.filter(id => elements.some(element => element.id === id));
+        if (!validIds.length) {
+          return { deletedIds: [], deletedCount: 0 };
+        }
+        deleteElements(validIds);
+        return { deletedIds: validIds, deletedCount: validIds.length };
+      },
+
+      add_elements: async ({ elements: incomingElements = [], selectNew = true } = {}) => {
+        const prepared = prepareImportedElements(incomingElements, 'original');
+        const addedIds = addPreparedElements(prepared, { selectNew });
+        return { addedIds, addedCount: addedIds.length };
+      },
+
+      insert_svg: async ({ svg, placement = 'center' } = {}) => {
+        if (!svg || typeof svg !== 'string') {
+          throw new Error('SVG markup is required.');
+        }
+        const { elements: parsedElements } = parseSVGToElements(svg);
+        const prepared = prepareImportedElements(parsedElements, placement === 'original' ? 'original' : 'center');
+        const addedIds = addPreparedElements(prepared, { selectNew: true });
+        return { addedIds, addedCount: addedIds.length, placement };
+      },
+
+      replace_defs: async ({ defs: nextDefs = {} } = {}) => {
+        setDefsFromImport(nextDefs);
+        return {
+          gradientCount: nextDefs.gradients?.length || 0,
+          variableCount: nextDefs.variables?.length || 0,
+          keyframeCount: nextDefs.keyframes?.length || 0,
+          fontCount: nextDefs.fonts?.length || 0,
+        };
+      },
+    };
+
+    return {
+      ...handlers,
+      'editor.get_snapshot': handlers.get_snapshot,
+      'editor.get_selected_elements': handlers.get_selected_elements,
+      'editor.get_canvas_screenshot': handlers.get_canvas_screenshot,
+      'editor.select_elements': handlers.select_elements,
+      'editor.update_elements': handlers.update_elements,
+      'editor.delete_elements': handlers.delete_elements,
+      'editor.add_elements': handlers.add_elements,
+      'editor.insert_svg': handlers.insert_svg,
+      'editor.replace_defs': handlers.replace_defs,
+    };
+  }, [
+    addPreparedElements,
+    canvasSize,
+    captureCanvasScreenshot,
+    defs,
+    deleteElements,
+    elements,
+    prepareImportedElements,
+    selectedId,
+    selectedIds,
+    setDefsFromImport,
+    setSelectedIds,
+    updateElements,
+  ]);
+
+  const {
+    messages: aiMessages,
+    error: aiError,
+    isConfigured: isAiConfigured,
+    isConnecting: isAiConnecting,
+    isStreaming: isAiStreaming,
+    isAgentDone,
+    sendMessage: sendAiMessage,
+    stop: stopAi,
+    clearConversation: clearAiConversation,
+  } = useEditorAgent({
+    getEditorContext: buildEditorContext,
+    clientToolHandlers,
+  });
 
   // ── Paste from clipboard ────────────────────────────────────────────────────
   useEffect(() => {
@@ -301,7 +544,7 @@ export default function EditorScreen({ canvasSize, onFinish }) {
     }
     window.addEventListener('paste', onPaste);
     return () => window.removeEventListener('paste', onPaste);
-  }, [elements, canvasSize]);
+  }, [handlePasteSVG]);
 
   // ── Sub-bar button style ──────────────────────────────────────────────────
   const subBtn = (active = false) => ({
@@ -312,6 +555,19 @@ export default function EditorScreen({ canvasSize, onFinish }) {
     fontSize: 11, cursor: 'pointer',
     display: 'flex', alignItems: 'center', gap: 4,
     fontFamily: 'Syne, sans-serif',
+  });
+
+  const dockBtn = (active = false) => ({
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    border: `1px solid ${active ? 'rgba(13,101,217,0.28)' : 'var(--border)'}`,
+    background: active ? 'var(--accent-dim)' : 'var(--bg-raised)',
+    color: active ? 'var(--accent)' : 'var(--text-muted)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    cursor: 'pointer',
   });
 
   return (
@@ -499,20 +755,79 @@ export default function EditorScreen({ canvasSize, onFinish }) {
         />
       </div>
 
-      <EditorPropertiesPanel
-        elements={elements}
-        selectedId={selectedId}
-        selectedIds={selectedIds}
-        updateElement={updateElement}
-        updateElements={updateElements}
-        deleteElements={deleteElements}
-        defs={defs}
-        onAddGradient={addGradient}
-        onAddKeyframe={addKeyframe}
-        onAddFont={addFont}
-        onRemoveFont={removeFont}
-        onOpenCodeEditor={el => setCodeEditElement(el)}
-      />
+      <div style={{ display: 'flex', flexShrink: 0 }}>
+        {activeDock === 'properties' ? (
+          <EditorPropertiesPanel
+            elements={elements}
+            selectedId={selectedId}
+            selectedIds={selectedIds}
+            updateElement={updateElement}
+            updateElements={updateElements}
+            deleteElements={deleteElements}
+            defs={defs}
+            onAddGradient={addGradient}
+            onAddKeyframe={addKeyframe}
+            onAddFont={addFont}
+            onRemoveFont={removeFont}
+            onOpenCodeEditor={el => setCodeEditElement(el)}
+          />
+        ) : (
+          <EditorAiPanel
+            draft={aiDraft}
+            onDraftChange={setAiDraft}
+            messages={aiMessages}
+            error={aiError}
+            isConfigured={isAiConfigured}
+            isConnecting={isAiConnecting}
+            isStreaming={isAiStreaming}
+            isAgentDone={isAgentDone}
+            onSend={sendAiMessage}
+            onStop={stopAi}
+            onClear={clearAiConversation}
+          />
+        )}
+
+        <aside style={{
+          width: 44,
+          borderLeft: '1px solid var(--border)',
+          background: 'var(--bg-surface)',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: 10,
+          padding: '12px 6px',
+          flexShrink: 0,
+        }}>
+          <button
+            onClick={() => setActiveDock('properties')}
+            style={dockBtn(activeDock === 'properties')}
+            title="Properties"
+          >
+            <DuotoneIcon svg={ICONS.layers} size={15} />
+          </button>
+
+          <button
+            onClick={() => setActiveDock('ai')}
+            style={dockBtn(activeDock === 'ai')}
+            title="AI"
+          >
+            <DuotoneIcon svg={ICONS.ai} size={15} />
+          </button>
+
+          <div style={{
+            marginTop: 'auto',
+            writingMode: 'vertical-rl',
+            transform: 'rotate(180deg)',
+            fontSize: 9,
+            color: 'var(--text-muted)',
+            letterSpacing: '0.22em',
+            textTransform: 'uppercase',
+            fontWeight: 700,
+          }}>
+            Side Dock
+          </div>
+        </aside>
+      </div>
 
       {showKeymap && (
         <KeymapSettings

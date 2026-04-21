@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { parseSVG, buildSchema } from './lib/svgParser';
 import { useRoute } from './lib/useRoute';
 import { saveSession, loadSession, clearSession } from './lib/session';
@@ -13,15 +13,20 @@ import FieldMapper from './components/FieldMapper';
 import SchemaPreview from './components/SchemaPreview';
 import CanvasSizePicker from './components/editor/CanvasSizePicker.jsx';
 import EditorScreen from './components/editor/EditorScreen.jsx';
+import { clearStoredEditorAiSession } from './editor/useEditorAgent.js';
 import './index.css';
 
 const THEME_KEY = 'salesive_theme';
+
+function ignoreStorageError() {}
 
 function getInitialTheme() {
   try {
     const storedTheme = localStorage.getItem(THEME_KEY);
     if (storedTheme === 'light' || storedTheme === 'dark') return storedTheme;
-  } catch {}
+  } catch (error) {
+    ignoreStorageError(error);
+  }
   return 'dark';
 }
 
@@ -46,16 +51,20 @@ export default function App() {
   const [selectedId,   setSelectedId]   = useState(null);
   const [mappings,     setMappings]     = useState(() => session.mappings || {});
   const [templateMeta, setTemplateMeta] = useState(() => session.templateMeta || { id: '', name: 'Untitled Template' });
+  const didRunInitialRedirectRef = useRef(false);
 
   // ── Redirect based on session if route is root ─────────────────────────────────
   useEffect(() => {
+    if (didRunInitialRedirectRef.current) return;
+    didRunInitialRedirectRef.current = true;
+
     if (mode === 'upload' && session.mode && session.mode !== 'upload') {
       if ((session.mode === 'editor' && session.canvasSize) || 
           (['mapping', 'preview'].includes(session.mode) && session.svgString)) {
         navigate(session.mode);
       }
     }
-  }, []); // Only on mount
+  }, [mode, navigate, session.canvasSize, session.mode, session.svgString]);
 
   // ── Persist to localStorage on state changes ──────────────────────────────────
   useEffect(() => {
@@ -64,7 +73,11 @@ export default function App() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    try { localStorage.setItem(THEME_KEY, theme); } catch {}
+    try {
+      localStorage.setItem(THEME_KEY, theme);
+    } catch (error) {
+      ignoreStorageError(error);
+    }
   }, [theme]);
 
   useEffect(() => {
@@ -91,7 +104,11 @@ export default function App() {
     });
 
     // Store elements into editor localStorage so EditorScreen picks them up
-    try { localStorage.setItem('salesive_editor', JSON.stringify(elements)); } catch {}
+    try {
+      localStorage.setItem('salesive_editor', JSON.stringify(elements));
+    } catch (error) {
+      ignoreStorageError(error);
+    }
 
     navigate('editor');
   }
@@ -131,6 +148,7 @@ export default function App() {
 
   function handleNewProject() {
     clearSession();
+    clearStoredEditorAiSession();
     localStorage.removeItem('salesive_editor');
     localStorage.removeItem('salesive_editor_viewport');
     setSvgString(null);

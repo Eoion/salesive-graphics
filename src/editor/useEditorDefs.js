@@ -2,19 +2,41 @@ import { useState, useCallback } from 'react';
 
 const LS_KEY = 'salesive_defs';
 
+function normalizeFont(font) {
+  if (!font || typeof font.name !== 'string' || !font.name.trim()) return null;
+  return {
+    ...font,
+    name: font.name.trim(),
+    type: font.type === 'custom' ? 'custom' : 'google',
+  };
+}
+
+function normalizeDefs(defs = {}) {
+  return {
+    gradients: Array.isArray(defs.gradients) ? defs.gradients : [],
+    variables: Array.isArray(defs.variables) ? defs.variables : [],
+    keyframes: Array.isArray(defs.keyframes) ? defs.keyframes : [],
+    fonts: (Array.isArray(defs.fonts) ? defs.fonts : []).map(normalizeFont).filter(Boolean),
+  };
+}
+
 function loadDefs() {
   try {
     const raw = localStorage.getItem(LS_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      return { gradients: [], variables: [], keyframes: [], fonts: [], ...parsed };
+      return normalizeDefs(parsed);
     }
-  } catch {}
-  return { gradients: [], variables: [], keyframes: [], fonts: [] };
+  } catch {
+    // Ignore malformed persisted defs and fall back to a safe empty set.
+  }
+  return normalizeDefs();
 }
 
 function storeDefs(defs) {
-  try { localStorage.setItem(LS_KEY, JSON.stringify(defs)); } catch {}
+  try { localStorage.setItem(LS_KEY, JSON.stringify(defs)); } catch {
+    // Storage can fail in private mode or quota exhaustion; editor state still works in memory.
+  }
 }
 
 export function useEditorDefs() {
@@ -23,8 +45,9 @@ export function useEditorDefs() {
   const updateDefs = useCallback((updater) => {
     setDefs(prev => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
-      storeDefs(next);
-      return next;
+      const normalized = normalizeDefs(next);
+      storeDefs(normalized);
+      return normalized;
     });
   }, []);
 
@@ -68,9 +91,11 @@ export function useEditorDefs() {
 
   const addFont = useCallback((font) => {
     updateDefs(d => {
+      const normalized = normalizeFont(font);
+      if (!normalized) return d;
       const fonts = d.fonts || [];
-      if (fonts.find(f => f.name === font.name)) return d;
-      return { ...d, fonts: [...fonts, font] };
+      if (fonts.find(f => f.name === normalized.name)) return d;
+      return { ...d, fonts: [...fonts, normalized] };
     });
   }, [updateDefs]);
 
@@ -79,13 +104,7 @@ export function useEditorDefs() {
   }, [updateDefs]);
 
   const setDefsFromImport = useCallback((importedDefs) => {
-    const merged = {
-      gradients: importedDefs.gradients || [],
-      variables: importedDefs.variables || [],
-      keyframes: importedDefs.keyframes || [],
-      fonts: importedDefs.fonts || [],
-    };
-    updateDefs(merged);
+    updateDefs(normalizeDefs(importedDefs));
   }, [updateDefs]);
 
   return {

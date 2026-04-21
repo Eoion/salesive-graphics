@@ -25,7 +25,7 @@ function rotateTransform(el) {
 const DASH_MAP = { dashed: '8,4', dotted: '2,4' };
 function dashAttr(d) { return DASH_MAP[d]; }
 
-function serializeOne(el, defs) {
+function serializeOne(el) {
   const vis  = el.visible === false ? ' display="none"' : '';
   const desc = el.description ? ` data-description="${esc(el.description)}"` : '';
   const rot  = rotateTransform(el);
@@ -184,7 +184,7 @@ function serializeOne(el, defs) {
 }
 
 export function serializeElements(elements, { width, height }, defs) {
-  const body = elements.map(el => serializeOne(el, defs)).filter(Boolean).join('\n  ');
+  const body = elements.map(el => serializeOne(el)).filter(Boolean).join('\n  ');
 
   let defsSection = '';
   if (defs) {
@@ -208,8 +208,9 @@ export function serializeElements(elements, { width, height }, defs) {
     if (defs.keyframes?.length) {
       parts.push(`<style><![CDATA[${defs.keyframes.map(k => k.css).join('\n')}]]></style>`);
     }
-    if (defs.fonts?.length) {
-      const fontCss = defs.fonts.map(f => {
+    const fonts = (defs.fonts || []).filter(f => typeof f?.name === 'string' && f.name.trim());
+    if (fonts.length) {
+      const fontCss = fonts.map(f => {
         if (f.type === 'google') {
           return `@import url('https://fonts.googleapis.com/css2?family=${encodeURIComponent(f.name)}:wght@400;700&display=swap');`;
         }

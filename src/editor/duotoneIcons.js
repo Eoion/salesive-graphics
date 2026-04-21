@@ -76,6 +76,8 @@ export const ICONS = {
 
   animate: `<path opacity="0.4" d="M12 3C7.02944 3 3 7.02944 3 12C3 16.9706 7.02944 21 12 21C16.9706 21 21 16.9706 21 12" stroke="currentColor" stroke-linecap="round" stroke-width="1.5"/><path d="M21 3L21 9L15 9" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"/>`,
 
+  ai: `<path opacity="0.4" d="M12 2.75L14.1026 7.89744L19.25 10L14.1026 12.1026L12 17.25L9.89744 12.1026L4.75 10L9.89744 7.89744L12 2.75Z" fill="currentColor"/><path d="M12 2.75L14.1026 7.89744L19.25 10L14.1026 12.1026L12 17.25L9.89744 12.1026L4.75 10L9.89744 7.89744L12 2.75Z" stroke="currentColor" stroke-linejoin="round" stroke-width="1.5"/><path d="M18.5 4.5L19.0547 5.9453L20.5 6.5L19.0547 7.0547L18.5 8.5L17.9453 7.0547L16.5 6.5L17.9453 5.9453L18.5 4.5ZM6 15.5L6.41667 16.5833L7.5 17L6.41667 17.4167L6 18.5L5.58333 17.4167L4.5 17L5.58333 16.5833L6 15.5Z" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"/>`,
+
   sun: `<circle opacity="0.4" cx="12" cy="12" r="4" fill="currentColor"/><circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="1.5"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>`,
 
   moon: `<path opacity="0.4" d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" fill="currentColor"/><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>`,
