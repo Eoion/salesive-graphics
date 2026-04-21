@@ -2,11 +2,35 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
 
 export const EDITOR_AI_CONVERSATION_KEY = 'salesive_editor_ai_conversation';
-export const EDITOR_AI_MESSAGES_KEY = 'salesive_editor_ai_messages';
 
 const DEFAULT_NAMESPACE = '/agent/svg-editor';
 
-function ignoreStorageError() {}
+const TOOL_PHASE_MAP = {
+  get_canvas_state: 'reading',
+  list_elements: 'reading',
+  get_element: 'reading',
+  take_screenshot: 'reading',
+  select_element: 'selecting',
+  update_element: 'editing',
+  delete_element: 'editing',
+  add_element: 'editing',
+  duplicate_element: 'editing',
+  move_element: 'editing',
+  resize_element: 'editing',
+  set_fill: 'editing',
+  set_stroke: 'editing',
+  set_opacity: 'editing',
+  set_text: 'editing',
+  lock_element: 'editing',
+  unlock_element: 'editing',
+  bring_forward: 'editing',
+  send_backward: 'editing',
+  agent_thought: 'thinking',
+};
+
+function toolPhase(tool) {
+  return TOOL_PHASE_MAP[tool] || 'working';
+}
 
 function makeId(prefix = 'msg') {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -20,83 +44,55 @@ function loadConversationId() {
   try {
     const stored = localStorage.getItem(EDITOR_AI_CONVERSATION_KEY);
     if (stored) return stored;
-  } catch (error) {
-    ignoreStorageError(error);
-  }
-  const created = makeConversationId();
-  try {
-    localStorage.setItem(EDITOR_AI_CONVERSATION_KEY, created);
-  } catch (error) {
-    ignoreStorageError(error);
-  }
-  return created;
-}
-
-function loadMessages() {
-  try {
-    const stored = localStorage.getItem(EDITOR_AI_MESSAGES_KEY);
-    if (!stored) return [];
-    const parsed = JSON.parse(stored);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-function persistConversationId(conversationId) {
-  try {
-    localStorage.setItem(EDITOR_AI_CONVERSATION_KEY, conversationId);
-  } catch (error) {
-    ignoreStorageError(error);
-  }
-}
-
-function persistMessages(messages) {
-  try {
-    localStorage.setItem(EDITOR_AI_MESSAGES_KEY, JSON.stringify(messages));
-  } catch (error) {
-    ignoreStorageError(error);
-  }
+  } catch {}
+  const id = makeConversationId();
+  try { localStorage.setItem(EDITOR_AI_CONVERSATION_KEY, id); } catch {}
+  return id;
 }
 
 function parseMaybeJson(value) {
   if (typeof value !== 'string') return value;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return value;
-  }
+  try { return JSON.parse(value); } catch { return value; }
 }
 
 function finalizeStreaming(messages) {
-  return messages.map((message) => (
-    message.role === 'ai' && message.isStreaming
-      ? { ...message, isStreaming: false }
-      : message
-  ));
+  return messages.map(m => m.role === 'ai' && m.isStreaming ? { ...m, isStreaming: false } : m);
 }
 
-function upsertToolCall(messages, nextMessage) {
+function upsertToolCall(messages, next) {
   let found = false;
-  const updated = messages.map((message) => {
-    if (message.role !== 'tool_call' || message.toolCallId !== nextMessage.toolCallId) {
-      return message;
-    }
+  const updated = messages.map(m => {
+    if (m.role !== 'tool_call' || m.toolCallId !== next.toolCallId) return m;
     found = true;
-    return { ...message, ...nextMessage };
+    return { ...m, ...next };
   });
+  return found ? updated : [...updated, next];
+}
 
-  if (found) return updated;
-  return [...updated, nextMessage];
+function normalizeHistory(history) {
+  const resultMap = {};
+  for (const msg of history) {
+    if (msg.role === 'tool' && msg.metadata?.tool_call_id) {
+      resultMap[msg.metadata.tool_call_id] = msg.content;
+    }
+  }
+  const out = [];
+  for (const msg of history) {
+    if (msg.role === 'tool') continue;
+    if (msg.role === 'tool_call') {
+      const id = msg.metadata?.tool_call_id || msg.toolCallId;
+      let args = {};
+      try { if (msg.content) args = JSON.parse(msg.content); } catch {}
+      out.push({ ...msg, role: 'tool_call', tool: msg.toolName || msg.tool, toolCallId: id, args, result: resultMap[id] || null, status: resultMap[id] ? 'done' : 'running' });
+    } else {
+      out.push(msg);
+    }
+  }
+  return out;
 }
 
 export function clearStoredEditorAiSession() {
-  try {
-    localStorage.removeItem(EDITOR_AI_CONVERSATION_KEY);
-    localStorage.removeItem(EDITOR_AI_MESSAGES_KEY);
-  } catch (error) {
-    ignoreStorageError(error);
-  }
+  try { localStorage.removeItem(EDITOR_AI_CONVERSATION_KEY); } catch {}
 }
 
 export function useEditorAgent({ getEditorContext, clientToolHandlers = {} } = {}) {
@@ -105,70 +101,55 @@ export function useEditorAgent({ getEditorContext, clientToolHandlers = {} } = {
   const isConfigured = Boolean(serverUrl);
 
   const [conversationId, setConversationId] = useState(loadConversationId);
-  const [messages, setMessages] = useState(loadMessages);
+  const [messages, setMessages] = useState([]);
+  const [conversations, setConversations] = useState([]);
   const [error, setError] = useState(null);
   const [isConnecting, setIsConnecting] = useState(isConfigured);
   const [isStreaming, setIsStreaming] = useState(false);
   const [isAgentDone, setIsAgentDone] = useState(true);
+  const [isThinking, setIsThinking] = useState(false);
+  // agentCursor: tracks what the agent is currently doing for the cursor overlay
+  const [agentCursor, setAgentCursor] = useState({ visible: false, elementId: null, thought: null, phase: 'idle' });
 
   const socketRef = useRef(null);
   const connectPromiseRef = useRef(null);
   const getEditorContextRef = useRef(getEditorContext);
   const clientToolHandlersRef = useRef(clientToolHandlers);
+  const idleTimerRef = useRef(null);
 
-  useEffect(() => {
-    getEditorContextRef.current = getEditorContext;
-  }, [getEditorContext]);
+  useEffect(() => { getEditorContextRef.current = getEditorContext; }, [getEditorContext]);
+  useEffect(() => { clientToolHandlersRef.current = clientToolHandlers; }, [clientToolHandlers]);
+  useEffect(() => { try { localStorage.setItem(EDITOR_AI_CONVERSATION_KEY, conversationId); } catch {} }, [conversationId]);
 
-  useEffect(() => {
-    clientToolHandlersRef.current = clientToolHandlers;
-  }, [clientToolHandlers]);
-
-  useEffect(() => {
-    persistConversationId(conversationId);
-  }, [conversationId]);
-
-  useEffect(() => {
-    persistMessages(messages);
-  }, [messages]);
+  function clearIdleTimer() {
+    if (idleTimerRef.current) { clearTimeout(idleTimerRef.current); idleTimerRef.current = null; }
+  }
+  function resetIdleTimer() {
+    clearIdleTimer();
+    idleTimerRef.current = setTimeout(() => {
+      setIsAgentDone(true); setIsStreaming(false); setIsThinking(false);
+    }, 60000);
+  }
 
   const ensureConnected = useCallback(() => {
     const socket = socketRef.current;
-    if (!socket) {
-      return Promise.reject(new Error('AI socket is not configured.'));
-    }
+    if (!socket) return Promise.reject(new Error('AI socket not configured'));
     if (socket.connected) return Promise.resolve(socket);
     if (connectPromiseRef.current) return connectPromiseRef.current;
-
     connectPromiseRef.current = new Promise((resolve, reject) => {
-      const cleanup = () => {
-        socket.off('connect', handleConnect);
-        socket.off('connect_error', handleError);
-      };
-
-      const handleConnect = () => {
-        cleanup();
-        connectPromiseRef.current = null;
-        resolve(socket);
-      };
-
-      const handleError = (connectError) => {
-        cleanup();
-        connectPromiseRef.current = null;
-        reject(connectError);
-      };
-
-      socket.once('connect', handleConnect);
-      socket.once('connect_error', handleError);
+      const cleanup = () => { socket.off('connect', onOk); socket.off('connect_error', onErr); };
+      const onOk = () => { cleanup(); connectPromiseRef.current = null; resolve(socket); };
+      const onErr = (e) => { cleanup(); connectPromiseRef.current = null; reject(e); };
+      socket.once('connect', onOk);
+      socket.once('connect_error', onErr);
       setIsConnecting(true);
       socket.connect();
     });
-
     return connectPromiseRef.current;
   }, []);
 
   useEffect(() => {
-    if (!isConfigured) return undefined;
+    if (!isConfigured) return;
 
     const socket = io(`${serverUrl}${namespace}`, {
       transports: ['polling', 'websocket'],
@@ -178,170 +159,144 @@ export function useEditorAgent({ getEditorContext, clientToolHandlers = {} } = {
       reconnectionAttempts: Infinity,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 10000,
-      randomizationFactor: 0.5,
     });
 
     socketRef.current = socket;
     socket.connect();
 
-    socket.on('connect', () => {
-      setIsConnecting(false);
-      setError(null);
-    });
-
+    socket.on('connect', () => { setIsConnecting(false); setError(null); });
     socket.on('disconnect', (reason) => {
-      setIsConnecting(true);
-      setIsStreaming(false);
-      setIsAgentDone(true);
-      if (reason === 'io server disconnect') {
-        socket.connect();
-      }
+      clearIdleTimer();
+      setIsConnecting(true); setIsStreaming(false); setIsAgentDone(true); setIsThinking(false);
+      if (reason === 'io server disconnect') socket.connect();
+    });
+    socket.on('connect_error', (e) => {
+      clearIdleTimer();
+      setIsConnecting(false); setIsStreaming(false); setIsAgentDone(true); setIsThinking(false);
+      setError(e?.message || 'Unable to connect to AI service.');
     });
 
-    socket.on('connect_error', (connectError) => {
-      setIsConnecting(false);
-      setIsStreaming(false);
-      setIsAgentDone(true);
-      setError(connectError?.message || 'Unable to connect to the editor AI service.');
+    socket.on('agent:thinking', () => {
+      resetIdleTimer();
+      setIsThinking(true);
+      setIsAgentDone(false);
+      setAgentCursor(prev => ({ ...prev, visible: true, phase: 'thinking', thought: null }));
     });
 
     socket.on('agent:token', (token) => {
       const content = typeof token === 'string' ? token : token?.content || token?.token || '';
-      setError(null);
-      setIsStreaming(true);
-      setIsAgentDone(false);
-      setMessages((prev) => {
-        const lastMessage = prev[prev.length - 1];
-        if (lastMessage?.role === 'ai' && lastMessage.isStreaming) {
-          return [
-            ...prev.slice(0, -1),
-            { ...lastMessage, content: `${lastMessage.content || ''}${content}` },
-          ];
+      resetIdleTimer();
+      setIsStreaming(true); setIsThinking(false); setIsAgentDone(false); setError(null);
+      setAgentCursor(prev => ({ ...prev, phase: 'responding' }));
+      setMessages(prev => {
+        const last = prev[prev.length - 1];
+        if (last?.role === 'ai' && last.isStreaming) {
+          return [...prev.slice(0, -1), { ...last, content: `${last.content || ''}${content}` }];
         }
-        return [...prev, {
-          id: makeId('ai'),
-          role: 'ai',
-          content,
-          createdAt: new Date().toISOString(),
-          isStreaming: true,
-        }];
+        return [...prev, { id: makeId('ai'), role: 'ai', content, createdAt: new Date().toISOString(), isStreaming: true }];
       });
     });
 
     socket.on('agent:response', (payload) => {
       const content = typeof payload === 'string' ? payload : payload?.content || '';
-      setError(null);
-      setIsStreaming(false);
-      setIsAgentDone(true);
-      setMessages((prev) => {
-        const lastMessage = prev[prev.length - 1];
-        if (lastMessage?.role === 'ai' && lastMessage.isStreaming) {
-          return [
-            ...prev.slice(0, -1),
-            { ...lastMessage, content, isStreaming: false },
-          ];
+      const convId = typeof payload === 'object' ? payload?.conversationId : null;
+      clearIdleTimer();
+      setIsStreaming(false); setIsAgentDone(true); setIsThinking(false); setError(null);
+      if (convId) { setConversationId(convId); try { localStorage.setItem(EDITOR_AI_CONVERSATION_KEY, convId); } catch {} }
+      setAgentCursor({ visible: false, elementId: null, thought: null, phase: 'idle' });
+      setMessages(prev => {
+        const last = prev[prev.length - 1];
+        if (last?.role === 'ai' && last.isStreaming) {
+          return [...prev.slice(0, -1), { ...last, content, isStreaming: false }];
         }
-        return [...finalizeStreaming(prev), {
-          id: makeId('ai'),
-          role: 'ai',
-          content,
-          createdAt: new Date().toISOString(),
-          isStreaming: false,
-        }];
+        return [...finalizeStreaming(prev), { id: makeId('ai'), role: 'ai', content, createdAt: new Date().toISOString(), isStreaming: false }];
       });
     });
 
     socket.on('agent:done', () => {
-      setIsStreaming(false);
-      setIsAgentDone(true);
-      setMessages((prev) => finalizeStreaming(prev));
+      clearIdleTimer();
+      setIsStreaming(false); setIsAgentDone(true); setIsThinking(false);
+      setAgentCursor({ visible: false, elementId: null, thought: null, phase: 'idle' });
+      setMessages(prev => finalizeStreaming(prev));
     });
 
-    socket.on('agent:error', (agentError) => {
-      const message = agentError?.message || agentError || 'The AI request failed.';
-      setError(message);
-      setIsStreaming(false);
-      setIsAgentDone(true);
-      setMessages((prev) => finalizeStreaming(prev));
+    socket.on('agent:error', (e) => {
+      clearIdleTimer();
+      const msg = e?.message || e || 'The AI request failed.';
+      setError(msg); setIsStreaming(false); setIsAgentDone(true); setIsThinking(false);
+      setAgentCursor({ visible: false, elementId: null, thought: null, phase: 'idle' });
+      setMessages(prev => finalizeStreaming(prev));
     });
 
     socket.on('agent:tool_call', ({ tool, input, args, toolCallId }) => {
-      setError(null);
-      setIsStreaming(false);
-      setIsAgentDone(false);
-      setMessages((prev) => upsertToolCall(finalizeStreaming(prev), {
-        id: toolCallId || makeId('tool'),
-        role: 'tool_call',
-        tool,
-        input,
-        args,
-        toolCallId: toolCallId || makeId('call'),
-        status: 'running',
-        createdAt: new Date().toISOString(),
+      resetIdleTimer();
+      setIsStreaming(false); setIsAgentDone(false); setIsThinking(false); setError(null);
+      const elementId = args?.id || args?.elementId || args?.element_id || null;
+      setAgentCursor({ visible: true, elementId, thought: null, phase: toolPhase(tool) });
+      setMessages(prev => upsertToolCall(finalizeStreaming(prev), {
+        id: toolCallId || makeId('tool'), role: 'tool_call', tool, input, args,
+        toolCallId: toolCallId || makeId('call'), status: 'running', createdAt: new Date().toISOString(),
       }));
     });
 
     socket.on('agent:tool_result', ({ toolCallId, result, error: toolError }) => {
-      setMessages((prev) => upsertToolCall(prev, {
-        toolCallId,
-        status: toolError ? 'error' : 'done',
-        result: toolError ? null : parseMaybeJson(result),
-        error: toolError || null,
+      resetIdleTimer();
+      setMessages(prev => upsertToolCall(prev, {
+        toolCallId, status: toolError ? 'error' : 'done',
+        result: toolError ? null : parseMaybeJson(result), error: toolError || null,
       }));
     });
 
+    socket.on('conversation:list', (list) => { setConversations(Array.isArray(list) ? list : []); });
+
+    socket.on('conversation:history', ({ messages: history }) => {
+      setMessages(normalizeHistory(Array.isArray(history) ? history : []));
+    });
+
     socket.on('tool:execute', async ({ tool, args, toolCallId }) => {
-      const resolvedToolCallId = toolCallId || makeId('call');
-      setError(null);
-      setIsStreaming(false);
-      setIsAgentDone(false);
-      setMessages((prev) => upsertToolCall(finalizeStreaming(prev), {
-        id: resolvedToolCallId,
-        role: 'tool_call',
-        tool,
-        args,
-        toolCallId: resolvedToolCallId,
-        status: 'running',
-        createdAt: new Date().toISOString(),
-        isClientTool: true,
+      const tcId = toolCallId || makeId('call');
+      resetIdleTimer();
+      setIsAgentDone(false); setError(null);
+      const elementId = args?.id || args?.elementId || args?.element_id || null;
+      setAgentCursor({ visible: true, elementId, thought: null, phase: toolPhase(tool) });
+      setMessages(prev => upsertToolCall(finalizeStreaming(prev), {
+        id: tcId, role: 'tool_call', tool, args, toolCallId: tcId,
+        status: 'running', createdAt: new Date().toISOString(), isClientTool: true,
       }));
+
+      // Built-in: agent_thought
+      if (tool === 'agent_thought') {
+        const thought = args?.message || args?.thought || '';
+        setAgentCursor(prev => ({ ...prev, thought, phase: 'thinking' }));
+        await new Promise(r => setTimeout(r, Math.min(thought.length * 40, 3000)));
+        setAgentCursor(prev => ({ ...prev, thought: null, phase: prev.elementId ? 'working' : 'idle' }));
+        socket.emit('tool:response', { toolCallId: tcId, result: 'thought expressed' });
+        setMessages(prev => upsertToolCall(prev, { toolCallId: tcId, status: 'done', result: 'thought expressed' }));
+        return;
+      }
 
       const handler = clientToolHandlersRef.current[tool];
       if (!handler) {
-        const handlerError = `No client handler registered for "${tool}".`;
-        socket.emit('tool:response', { toolCallId: resolvedToolCallId, error: handlerError });
-        setMessages((prev) => upsertToolCall(prev, {
-          toolCallId: resolvedToolCallId,
-          status: 'error',
-          error: handlerError,
-        }));
+        const msg = `No handler for tool "${tool}"`;
+        socket.emit('tool:response', { toolCallId: tcId, error: msg });
+        setMessages(prev => upsertToolCall(prev, { toolCallId: tcId, status: 'error', error: msg }));
         return;
       }
 
       try {
         const result = await handler(args || {});
-        socket.emit('tool:response', {
-          toolCallId: resolvedToolCallId,
-          result: typeof result === 'string' ? result : JSON.stringify(result),
-        });
-        setMessages((prev) => upsertToolCall(prev, {
-          toolCallId: resolvedToolCallId,
-          status: 'done',
-          result,
-          error: null,
-        }));
-      } catch (toolError) {
-        const message = toolError?.message || String(toolError) || 'Tool execution failed.';
-        socket.emit('tool:response', { toolCallId: resolvedToolCallId, error: message });
-        setMessages((prev) => upsertToolCall(prev, {
-          toolCallId: resolvedToolCallId,
-          status: 'error',
-          error: message,
-        }));
+        const serialized = typeof result === 'string' ? result : JSON.stringify(result);
+        socket.emit('tool:response', { toolCallId: tcId, result: serialized });
+        setMessages(prev => upsertToolCall(prev, { toolCallId: tcId, status: 'done', result: parseMaybeJson(serialized) }));
+      } catch (err) {
+        const msg = err?.message || String(err) || 'Tool execution failed.';
+        socket.emit('tool:response', { toolCallId: tcId, error: msg });
+        setMessages(prev => upsertToolCall(prev, { toolCallId: tcId, status: 'error', error: msg }));
       }
     });
 
     return () => {
+      clearIdleTimer();
       connectPromiseRef.current = null;
       socket.removeAllListeners();
       socket.disconnect();
@@ -349,63 +304,70 @@ export function useEditorAgent({ getEditorContext, clientToolHandlers = {} } = {
     };
   }, [isConfigured, namespace, serverUrl]);
 
-  const sendMessage = useCallback(async (input) => {
-    const trimmed = input.trim();
-    if (!trimmed || !isConfigured) return false;
-
+  const sendMessage = useCallback(async (input, imageUrls = []) => {
+    const trimmed = (input || '').trim();
+    if (!trimmed && imageUrls.length === 0) return false;
+    if (!isConfigured) return false;
     try {
       const socket = await ensureConnected();
       setError(null);
       setIsAgentDone(false);
-      setMessages((prev) => [...prev, {
-        id: makeId('user'),
-        role: 'user',
-        content: trimmed,
-        createdAt: new Date().toISOString(),
+      setIsThinking(true);
+      resetIdleTimer();
+      setAgentCursor({ visible: true, elementId: null, thought: null, phase: 'thinking' });
+      setMessages(prev => [...prev, {
+        id: makeId('user'), role: 'user', content: trimmed,
+        images: imageUrls, createdAt: new Date().toISOString(),
       }]);
-
       socket.emit('agent:message', {
         conversationId,
         input: trimmed,
-        editorContext: getEditorContextRef.current ? getEditorContextRef.current() : null,
+        images: imageUrls,
+        context: getEditorContextRef.current?.() || null,
       });
-
       return true;
-    } catch (sendError) {
-      setError(sendError?.message || 'Unable to send your message right now.');
-      setIsAgentDone(true);
+    } catch (e) {
+      setError(e?.message || 'Unable to send message.');
+      setIsAgentDone(true); setIsThinking(false);
       return false;
     }
   }, [conversationId, ensureConnected, isConfigured]);
 
+  const loadHistory = useCallback((convId) => {
+    socketRef.current?.emit('conversation:history', { conversationId: convId, limit: 50 });
+  }, []);
+
+  const fetchConversations = useCallback(() => {
+    socketRef.current?.emit('conversation:list', { limit: 20 });
+  }, []);
+
   const stop = useCallback(() => {
-    if (socketRef.current?.connected) {
-      socketRef.current.emit('agent:stop', {});
-    }
-    setIsStreaming(false);
-    setIsAgentDone(true);
-    setMessages((prev) => finalizeStreaming(prev));
+    if (socketRef.current?.connected) socketRef.current.emit('agent:stop', {});
+    clearIdleTimer();
+    setIsStreaming(false); setIsAgentDone(true); setIsThinking(false);
+    setAgentCursor({ visible: false, elementId: null, thought: null, phase: 'idle' });
+    setMessages(prev => finalizeStreaming(prev));
   }, []);
 
   const clearConversation = useCallback(() => {
-    const nextConversationId = makeConversationId();
-    setConversationId(nextConversationId);
-    setMessages([]);
-    setError(null);
-    setIsStreaming(false);
-    setIsAgentDone(true);
+    const nextId = makeConversationId();
+    setConversationId(nextId);
+    setMessages([]); setError(null);
+    setIsStreaming(false); setIsAgentDone(true); setIsThinking(false);
+    setAgentCursor({ visible: false, elementId: null, thought: null, phase: 'idle' });
   }, []);
 
+  const selectConversation = useCallback((convId) => {
+    setConversationId(convId);
+    setMessages([]); setError(null);
+    try { localStorage.setItem(EDITOR_AI_CONVERSATION_KEY, convId); } catch {}
+    loadHistory(convId);
+  }, [loadHistory]);
+
   return {
-    conversationId,
-    messages,
-    error,
-    isConfigured,
-    isConnecting,
-    isStreaming,
-    isAgentDone,
-    sendMessage,
-    stop,
-    clearConversation,
+    conversationId, messages, conversations, error,
+    isConfigured, isConnecting, isStreaming, isAgentDone, isThinking,
+    agentCursor,
+    sendMessage, stop, clearConversation, loadHistory, fetchConversations, selectConversation,
   };
 }

@@ -13,13 +13,75 @@ import { addToCollection } from '../../lib/collection.js';
 import { syncCounter, freshId } from '../../editor/editorConstants.js';
 import EditorToolbar from './EditorToolbar.jsx';
 import EditorCanvas from './EditorCanvas.jsx';
-import EditorAiPanel from './EditorAiPanel.jsx';
+import EditorAiChat, { uploadImageToStore } from './EditorAiChat.jsx';
 import EditorPropertiesPanel from './EditorPropertiesPanel.jsx';
 import KeymapSettings from './KeymapSettings.jsx';
 import CollectionModal from './CollectionModal.jsx';
 import PasteSVGModal from './PasteSVGModal.jsx';
 import VariablesPanel from './VariablesPanel.jsx';
 import CodeEditor from './CodeEditor.jsx';
+
+// ─── Agent cursor overlay ─────────────────────────────────────────────────────
+function AgentCursorOverlay({ elementId, thought, phase, elements, canvasViewport }) {
+  const el = elements.find(e => e.id === elementId);
+  if (!el) return null;
+  const cx = el.x + (el.width || 0) / 2;
+  const cy = el.y + (el.height || 0) / 2;
+  const sx = canvasViewport.tx + cx * canvasViewport.scale;
+  const sy = canvasViewport.ty + cy * canvasViewport.scale;
+  const PHASE_COLORS = {
+    thinking: '#a78bfa', reading: '#60a5fa', selecting: '#34d399',
+    editing: '#fb923c', responding: '#60a5fa', working: '#fb923c',
+  };
+  const c = PHASE_COLORS[phase] || '#0d65d9';
+  return (
+    <div style={{
+      position: 'absolute', left: sx, top: sy, zIndex: 61,
+      pointerEvents: 'none', transform: 'translate(-4px, -4px)',
+    }}>
+      {/* Thought bubble */}
+      {thought && (
+        <div style={{
+          position: 'absolute', bottom: 30, left: 0, minWidth: 90, maxWidth: 220,
+          background: 'var(--bg-surface)', border: `1px solid ${c}55`,
+          borderRadius: 10, padding: '6px 10px', fontSize: 11, color: 'var(--text-primary)',
+          whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+          boxShadow: `0 4px 20px ${c}30, 0 1px 4px rgba(0,0,0,0.4)`,
+          animation: 'aiFadeUp 0.2s ease-out', lineHeight: 1.45,
+          backdropFilter: 'blur(4px)',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 4 }}>
+            <span style={{ display: 'flex', gap: 2 }}>
+              {[0,1,2].map(i => (
+                <span key={i} style={{ width: 4, height: 4, borderRadius: '50%', background: c, display: 'inline-block', animation: `aiPulse 1.1s ease-in-out ${i * 0.15}s infinite` }} />
+              ))}
+            </span>
+            <span style={{ fontSize: 9, color: c, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em' }}>AI</span>
+          </div>
+          {thought}
+          <div style={{ position: 'absolute', bottom: -6, left: 12, width: 0, height: 0, borderLeft: '6px solid transparent', borderRight: '6px solid transparent', borderTop: `6px solid var(--bg-surface)` }} />
+          <div style={{ position: 'absolute', bottom: -7, left: 11, width: 0, height: 0, borderLeft: '7px solid transparent', borderRight: '7px solid transparent', borderTop: `7px solid ${c}55` }} />
+        </div>
+      )}
+      {/* Cursor SVG */}
+      <svg width="22" height="24" viewBox="0 0 22 24" fill="none" style={{
+        filter: `drop-shadow(0 2px 6px ${c}90)`,
+        animation: 'agentCursorFloat 2.2s ease-in-out infinite',
+      }}>
+        <path d="M2 2l5.2 13.5 2.4-4.1 4.1-2.4L2 2z" fill={c} stroke="rgba(0,0,0,0.25)" strokeWidth="0.6" strokeLinejoin="round"/>
+        <path d="M9.3 11L13.5 15.2" stroke="white" strokeWidth="2" strokeLinecap="round" opacity="0.9"/>
+        <path d="M9.3 11L13.5 15.2" stroke={c} strokeWidth="1.5" strokeLinecap="round"/>
+      </svg>
+      {/* Phase indicator dot */}
+      <div style={{
+        position: 'absolute', top: 0, right: -8,
+        width: 10, height: 10, borderRadius: '50%',
+        background: c, border: '2px solid var(--bg-base)',
+        animation: 'aiPulseRing 1.5s ease-out infinite',
+      }} />
+    </div>
+  );
+}
 
 const SCREENSHOT_MIME_TYPES = {
   png: 'image/png',
@@ -92,15 +154,31 @@ export default function EditorScreen({ canvasSize, onFinish }) {
   const [showPasteSVG, setShowPasteSVG] = useState(false);
   const [showVariables, setShowVariables] = useState(false);
   const [codeEditElement, setCodeEditElement] = useState(null);
-  const [aiDraft, setAiDraft] = useState('');
   const [snapEnabled,  setSnapEnabled]  = useState(false);
   const [zoomDisplay,  setZoomDisplay]  = useState(100);
   const [pickerMode,   setPickerMode]   = useState(false);
+  const [canvasViewport, setCanvasViewport] = useState({ tx: 0, ty: 0, scale: 1 });
+  const [panelWidth,   setPanelWidth]   = useState(300);
 
   const scaleRef              = useRef(1);
   const canvasRef             = useRef();
   const canvasCtrl            = useRef({});
   const eyedropperPrevIdRef   = useRef(null);
+  const panelDragRef          = useRef(null);
+
+  // ── Panel drag-resize ─────────────────────────────────────────────────────
+  useEffect(() => {
+    function onMove(e) {
+      if (!panelDragRef.current) return;
+      const dx = panelDragRef.current.startX - e.clientX;
+      const next = Math.min(Math.max(panelDragRef.current.startW + dx, 240), 560);
+      setPanelWidth(next);
+    }
+    function onUp() { panelDragRef.current = null; }
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    return () => { window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); };
+  }, []);
 
   const {
     elements,
@@ -422,115 +500,130 @@ export default function EditorScreen({ canvasSize, onFinish }) {
   }, [insertElementsAtCenter]);
 
   const clientToolHandlers = useMemo(() => {
-    const handlers = {
-      get_snapshot: async () => ({
-        canvasSize,
-        selectedId,
-        selectedIds,
-        elements,
-        defs,
-        svg: serializeElements(elements, canvasSize, defs),
+    // Upload SVG and return URL
+    async function screenshotAndUpload() {
+      const svg = serializeElements(elements, canvasSize, defs);
+      const url = await uploadImageToStore(new Blob([svg], { type: 'image/svg+xml' }), 'canvas.svg');
+      return url;
+    }
+
+    const h = {
+      // ── Read ──────────────────────────────────────────────────────────────
+      get_canvas_state: async () => ({
+        canvasSize, elementCount: elements.length,
+        elements: elements.map(el => ({ id: el.id, type: el.type, x: el.x, y: el.y, width: el.width, height: el.height, fill: el.fill, stroke: el.stroke, opacity: el.opacity, text: el.text, locked: el.locked, visible: el.visible, fontSize: el.fontSize })),
+        selectedId, selectedIds,
       }),
-
-      get_selected_elements: async () => {
-        const selected = elements.filter(el => selectedIds.includes(el.id));
-        return { selected, count: selected.length };
+      list_elements: async () => elements.map(el => ({ id: el.id, type: el.type, x: el.x, y: el.y, width: el.width, height: el.height, fill: el.fill, stroke: el.stroke, text: el.text, locked: el.locked, visible: el.visible })),
+      get_element: async ({ id } = {}) => {
+        const el = elements.find(e => e.id === id);
+        if (!el) throw new Error(`Element "${id}" not found`);
+        return el;
       },
+      get_snapshot: async () => ({ canvasSize, elements, defs, selectedId, selectedIds, svg: serializeElements(elements, canvasSize, defs) }),
 
-      get_canvas_screenshot: async (options = {}) => captureCanvasScreenshot(options),
+      // ── Screenshot ────────────────────────────────────────────────────────
+      take_screenshot: async () => {
+        const url = await screenshotAndUpload();
+        return url || 'Screenshot failed: could not upload';
+      },
+      get_canvas_screenshot: async (opts = {}) => captureCanvasScreenshot(opts),
 
+      // ── Select ────────────────────────────────────────────────────────────
+      select_element: async ({ id } = {}) => {
+        if (!elements.some(e => e.id === id)) throw new Error(`Element "${id}" not found`);
+        setSelectedIds([id]);
+        setPrimarySelectedId(id);
+        return { selectedId: id };
+      },
       select_elements: async ({ ids = [] } = {}) => {
-        const validIds = ids.filter(id => elements.some(element => element.id === id));
-        setSelectedIds(validIds);
-        return { selectedIds: validIds, selectedCount: validIds.length };
+        const valid = ids.filter(id => elements.some(e => e.id === id));
+        setSelectedIds(valid);
+        if (valid.length) setPrimarySelectedId(valid[0]);
+        return { selectedIds: valid, count: valid.length };
       },
 
+      // ── Update ────────────────────────────────────────────────────────────
+      update_element: async ({ id, ...patch } = {}) => {
+        if (!elements.some(e => e.id === id)) throw new Error(`Element "${id}" not found`);
+        updateElement(id, patch);
+        return { id, updated: Object.keys(patch) };
+      },
       update_elements: async ({ ids = [], patch = {} } = {}) => {
-        const validIds = ids.filter(id => elements.some(element => element.id === id));
-        if (!validIds.length) {
-          return { updatedIds: [], updatedCount: 0 };
-        }
-        updateElements(validIds, patch);
-        return { updatedIds: validIds, updatedCount: validIds.length };
+        const valid = ids.filter(id => elements.some(e => e.id === id));
+        if (valid.length) updateElements(valid, patch);
+        return { updatedIds: valid, count: valid.length };
       },
+      set_fill: async ({ id, fill } = {}) => { updateElement(id, { fill }); return { id, fill }; },
+      set_stroke: async ({ id, stroke, strokeWidth } = {}) => { updateElement(id, { stroke, ...(strokeWidth != null ? { strokeWidth } : {}) }); return { id, stroke }; },
+      set_opacity: async ({ id, opacity } = {}) => { updateElement(id, { opacity }); return { id, opacity }; },
+      set_text: async ({ id, text } = {}) => { updateElement(id, { text }); return { id, text }; },
+      move_element: async ({ id, x, y } = {}) => { updateElement(id, { x, y }); return { id, x, y }; },
+      resize_element: async ({ id, width, height } = {}) => { updateElement(id, { width, height }); return { id, width, height }; },
+      lock_element: async ({ id, locked = true } = {}) => { updateElement(id, { locked }); return { id, locked }; },
+      unlock_element: async ({ id } = {}) => { updateElement(id, { locked: false }); return { id, locked: false }; },
 
+      // ── Delete ────────────────────────────────────────────────────────────
+      delete_element: async ({ id } = {}) => {
+        if (!elements.some(e => e.id === id)) throw new Error(`Element "${id}" not found`);
+        deleteElements([id]);
+        return { deleted: id };
+      },
       delete_elements: async ({ ids = [] } = {}) => {
-        const validIds = ids.filter(id => elements.some(element => element.id === id));
-        if (!validIds.length) {
-          return { deletedIds: [], deletedCount: 0 };
-        }
-        deleteElements(validIds);
-        return { deletedIds: validIds, deletedCount: validIds.length };
+        const valid = ids.filter(id => elements.some(e => e.id === id));
+        if (valid.length) deleteElements(valid);
+        return { deletedIds: valid, count: valid.length };
       },
 
-      add_elements: async ({ elements: incomingElements = [], selectNew = true } = {}) => {
-        const prepared = prepareImportedElements(incomingElements, 'original');
-        const addedIds = addPreparedElements(prepared, { selectNew });
-        return { addedIds, addedCount: addedIds.length };
+      // ── Add ───────────────────────────────────────────────────────────────
+      add_element: async ({ type, ...props } = {}) => {
+        syncCounter(elements);
+        const id = freshId(type || 'rect');
+        addElement({ type: type || 'rect', id, x: props.x ?? canvasSize.width / 2 - 50, y: props.y ?? canvasSize.height / 2 - 50, width: props.width ?? 100, height: props.height ?? 100, fill: props.fill || '#0d65d9', stroke: 'none', strokeWidth: 0, opacity: 1, ...props });
+        return { id };
+      },
+      add_elements: async ({ elements: els = [], selectNew = true } = {}) => {
+        const prepared = prepareImportedElements(els, 'original');
+        const ids = addPreparedElements(prepared, { selectNew });
+        return { addedIds: ids, count: ids.length };
+      },
+      duplicate_element: async ({ id } = {}) => {
+        const src = elements.find(e => e.id === id);
+        if (!src) throw new Error(`Element "${id}" not found`);
+        syncCounter(elements);
+        const newId = freshId(src.type);
+        addElement({ ...structuredClone(src), id: newId, x: src.x + 10, y: src.y + 10 });
+        return { originalId: id, newId };
       },
 
+      // ── Layer ─────────────────────────────────────────────────────────────
+      bring_forward: async ({ id } = {}) => { bringForward(id); return { id }; },
+      send_backward: async ({ id } = {}) => { sendBackward(id); return { id }; },
+
+      // ── SVG import ────────────────────────────────────────────────────────
       insert_svg: async ({ svg, placement = 'center' } = {}) => {
-        if (!svg || typeof svg !== 'string') {
-          throw new Error('SVG markup is required.');
-        }
-        const { elements: parsedElements } = parseSVGToElements(svg);
-        const prepared = prepareImportedElements(parsedElements, placement === 'original' ? 'original' : 'center');
-        const addedIds = addPreparedElements(prepared, { selectNew: true });
-        return { addedIds, addedCount: addedIds.length, placement };
+        if (!svg) throw new Error('SVG markup required');
+        const { elements: parsed } = parseSVGToElements(svg);
+        const prepared = prepareImportedElements(parsed, placement === 'original' ? 'original' : 'center');
+        const ids = addPreparedElements(prepared, { selectNew: true });
+        return { addedIds: ids, count: ids.length };
       },
-
-      replace_defs: async ({ defs: nextDefs = {} } = {}) => {
-        setDefsFromImport(nextDefs);
-        return {
-          gradientCount: nextDefs.gradients?.length || 0,
-          variableCount: nextDefs.variables?.length || 0,
-          keyframeCount: nextDefs.keyframes?.length || 0,
-          fontCount: nextDefs.fonts?.length || 0,
-        };
-      },
+      replace_defs: async ({ defs: d = {} } = {}) => { setDefsFromImport(d); return { ok: true }; },
     };
 
-    return {
-      ...handlers,
-      'editor.get_snapshot': handlers.get_snapshot,
-      'editor.get_selected_elements': handlers.get_selected_elements,
-      'editor.get_canvas_screenshot': handlers.get_canvas_screenshot,
-      'editor.select_elements': handlers.select_elements,
-      'editor.update_elements': handlers.update_elements,
-      'editor.delete_elements': handlers.delete_elements,
-      'editor.add_elements': handlers.add_elements,
-      'editor.insert_svg': handlers.insert_svg,
-      'editor.replace_defs': handlers.replace_defs,
-    };
+    // Alias with "editor." prefix too
+    const aliased = {};
+    for (const [k, v] of Object.entries(h)) aliased[`editor.${k}`] = v;
+    return { ...h, ...aliased };
   }, [
-    addPreparedElements,
-    canvasSize,
-    captureCanvasScreenshot,
-    defs,
-    deleteElements,
-    elements,
-    prepareImportedElements,
-    selectedId,
-    selectedIds,
-    setDefsFromImport,
-    setSelectedIds,
-    updateElements,
+    addElement, addPreparedElements, bringForward, canvasSize, captureCanvasScreenshot,
+    defs, deleteElements, elements, prepareImportedElements, selectedId, selectedIds,
+    sendBackward, setDefsFromImport, setPrimarySelectedId, setSelectedIds,
+    updateElement, updateElements,
   ]);
 
-  const {
-    messages: aiMessages,
-    error: aiError,
-    isConfigured: isAiConfigured,
-    isConnecting: isAiConnecting,
-    isStreaming: isAiStreaming,
-    isAgentDone,
-    sendMessage: sendAiMessage,
-    stop: stopAi,
-    clearConversation: clearAiConversation,
-  } = useEditorAgent({
-    getEditorContext: buildEditorContext,
-    clientToolHandlers,
-  });
+  const agentRef = useEditorAgent({ getEditorContext: buildEditorContext, clientToolHandlers });
+  const { agentCursor } = agentRef;
 
   // ── Paste from clipboard ────────────────────────────────────────────────────
   useEffect(() => {
@@ -555,19 +648,6 @@ export default function EditorScreen({ canvasSize, onFinish }) {
     fontSize: 11, cursor: 'pointer',
     display: 'flex', alignItems: 'center', gap: 4,
     fontFamily: 'Syne, sans-serif',
-  });
-
-  const dockBtn = (active = false) => ({
-    width: 32,
-    height: 32,
-    borderRadius: 8,
-    border: `1px solid ${active ? 'rgba(13,101,217,0.28)' : 'var(--border)'}`,
-    background: active ? 'var(--accent-dim)' : 'var(--bg-raised)',
-    color: active ? 'var(--accent)' : 'var(--text-muted)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    cursor: 'pointer',
   });
 
   return (
@@ -724,109 +804,134 @@ export default function EditorScreen({ canvasSize, onFinish }) {
           </button>
         </div>
 
-        <EditorCanvas
-          elements={elements}
-          defs={defs}
-          selectedId={selectedId}
-          selectedIds={selectedIds}
-          setSelectedIds={setSelectedIds}
-          toggleSelectedId={toggleSelectedId}
-          canvasSize={canvasSize}
-          activeTool={activeTool}
-          scaleRef={scaleRef}
-          canvasRef={canvasRef}
-          canvasCtrl={canvasCtrl}
-          onViewportChange={v => setZoomDisplay(Math.round(v.scale * 100))}
-          updateElement={updateElement}
-          updateElementLive={updateElementLive}
-          updateElementsLive={updateElementsLive}
-          onElementPointerDown={onElementPointerDown}
-          onPointerMove={onPointerMove}
-          onPointerUp={onPointerUp}
-          onCanvasPointerDown={onCanvasPointerDown}
-          onMarqueeEnd={(ids) => {
-            setSelectedIds(ids);
-            if (ids.length === 1) setPrimarySelectedId(ids[0]);
-          }}
-          eyedropperActive={activeTool === 'eyedropper'}
-          onEyedrop={handleEyedrop}
-          pickerMode={pickerMode}
-          onPick={id => { setSelectedId(id); setPickerMode(false); setActiveTool('select'); }}
-        />
-      </div>
-
-      <div style={{ display: 'flex', flexShrink: 0 }}>
-        {activeDock === 'properties' ? (
-          <EditorPropertiesPanel
+        {/* Canvas wrapper — position:relative so overlays work */}
+        <div style={{ flex: 1, position: 'relative', overflow: 'hidden', display: 'flex' }}>
+          <EditorCanvas
             elements={elements}
+            defs={defs}
             selectedId={selectedId}
             selectedIds={selectedIds}
+            setSelectedIds={setSelectedIds}
+            toggleSelectedId={toggleSelectedId}
+            canvasSize={canvasSize}
+            activeTool={activeTool}
+            scaleRef={scaleRef}
+            canvasRef={canvasRef}
+            canvasCtrl={canvasCtrl}
+            onViewportChange={v => { setZoomDisplay(Math.round(v.scale * 100)); setCanvasViewport({ tx: v.tx, ty: v.ty, scale: v.scale }); }}
+            agentHighlightId={agentCursor.visible ? agentCursor.elementId : null}
             updateElement={updateElement}
-            updateElements={updateElements}
-            deleteElements={deleteElements}
-            defs={defs}
-            onAddGradient={addGradient}
-            onAddKeyframe={addKeyframe}
-            onAddFont={addFont}
-            onRemoveFont={removeFont}
-            onOpenCodeEditor={el => setCodeEditElement(el)}
+            updateElementLive={updateElementLive}
+            updateElementsLive={updateElementsLive}
+            onElementPointerDown={onElementPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={onPointerUp}
+            onCanvasPointerDown={onCanvasPointerDown}
+            onMarqueeEnd={(ids) => {
+              setSelectedIds(ids);
+              if (ids.length === 1) setPrimarySelectedId(ids[0]);
+            }}
+            eyedropperActive={activeTool === 'eyedropper'}
+            onEyedrop={handleEyedrop}
+            pickerMode={pickerMode}
+            onPick={id => { setSelectedId(id); setPickerMode(false); setActiveTool('select'); }}
           />
-        ) : (
-          <EditorAiPanel
-            draft={aiDraft}
-            onDraftChange={setAiDraft}
-            messages={aiMessages}
-            error={aiError}
-            isConfigured={isAiConfigured}
-            isConnecting={isAiConnecting}
-            isStreaming={isAiStreaming}
-            isAgentDone={isAgentDone}
-            onSend={sendAiMessage}
-            onStop={stopAi}
-            onClear={clearAiConversation}
-          />
-        )}
 
-        <aside style={{
-          width: 44,
-          borderLeft: '1px solid var(--border)',
-          background: 'var(--bg-surface)',
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          gap: 10,
-          padding: '12px 6px',
-          flexShrink: 0,
-        }}>
-          <button
-            onClick={() => setActiveDock('properties')}
-            style={dockBtn(activeDock === 'properties')}
-            title="Properties"
-          >
-            <DuotoneIcon svg={ICONS.layers} size={15} />
-          </button>
+          {/* Agent lock overlay — blocks user interaction while AI is working */}
+          {!agentRef.isAgentDone && (
+            <div style={{
+              position: 'absolute', inset: 0, zIndex: 60,
+              cursor: 'not-allowed', pointerEvents: 'all',
+              background: 'rgba(0,0,0,0.03)',
+            }}>
+              <div style={{
+                position: 'absolute', bottom: 16, left: '50%', transform: 'translateX(-50%)',
+                display: 'flex', alignItems: 'center', gap: 8,
+                padding: '6px 14px', borderRadius: 20,
+                background: 'rgba(13,101,217,0.12)', backdropFilter: 'blur(8px)',
+                border: '1px solid rgba(13,101,217,0.25)',
+                fontSize: 11, color: 'var(--accent)', fontFamily: 'Syne, sans-serif', fontWeight: 600,
+                pointerEvents: 'none', whiteSpace: 'nowrap',
+                animation: 'aiFadeUp 0.2s ease-out',
+              }}>
+                <span style={{ display: 'flex', gap: 3 }}>
+                  {[0,1,2].map(i => (
+                    <span key={i} style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--accent)', display: 'inline-block', animation: `aiPulse 1.2s ease-in-out ${i * 0.18}s infinite` }} />
+                  ))}
+                </span>
+                AI is working…
+              </div>
+            </div>
+          )}
 
-          <button
-            onClick={() => setActiveDock('ai')}
-            style={dockBtn(activeDock === 'ai')}
-            title="AI"
-          >
-            <DuotoneIcon svg={ICONS.ai} size={15} />
-          </button>
+          {/* Agent cursor overlay */}
+          {agentCursor.visible && agentCursor.elementId && (
+            <AgentCursorOverlay
+              elementId={agentCursor.elementId}
+              thought={agentCursor.thought}
+              phase={agentCursor.phase}
+              elements={elements}
+              canvasViewport={canvasViewport}
+            />
+          )}
+        </div>
+      </div>
 
-          <div style={{
-            marginTop: 'auto',
-            writingMode: 'vertical-rl',
-            transform: 'rotate(180deg)',
-            fontSize: 9,
-            color: 'var(--text-muted)',
-            letterSpacing: '0.22em',
-            textTransform: 'uppercase',
-            fontWeight: 700,
-          }}>
-            Side Dock
+      {/* ── Right panel (Properties / AI) with drag-resize ─────────────────── */}
+      <div style={{ width: panelWidth, display: 'flex', flexDirection: 'row', flexShrink: 0, position: 'relative' }}>
+        {/* Drag handle */}
+        <div
+          onPointerDown={e => { e.preventDefault(); panelDragRef.current = { startX: e.clientX, startW: panelWidth }; e.currentTarget.setPointerCapture(e.pointerId); }}
+          style={{ width: 5, cursor: 'col-resize', background: 'transparent', flexShrink: 0, borderLeft: '1px solid var(--border)', transition: 'background 0.15s' }}
+          onMouseEnter={e => e.currentTarget.style.background = 'rgba(13,101,217,0.3)'}
+          onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+        />
+        {/* Panel content */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--bg-surface)' }}>
+          {/* Tab bar */}
+          <div style={{ display: 'flex', gap: 2, padding: '5px 8px', borderBottom: '1px solid var(--border)', flexShrink: 0, background: 'var(--bg-surface)' }}>
+            {[
+              { key: 'properties', icon: ICONS.layers, label: 'Properties' },
+              { key: 'ai', icon: ICONS.ai, label: 'AI', indicator: agentCursor.visible },
+            ].map(tab => (
+              <button key={tab.key} onClick={() => setActiveDock(tab.key)} style={{
+                display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 6, border: 'none',
+                background: activeDock === tab.key ? 'var(--accent-dim)' : 'transparent',
+                color: activeDock === tab.key ? 'var(--accent)' : 'var(--text-muted)',
+                fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: 'Syne, sans-serif', position: 'relative',
+                transition: 'background 0.1s, color 0.1s',
+              }}
+              onMouseEnter={e => { if (activeDock !== tab.key) e.currentTarget.style.color = 'var(--text-secondary)'; }}
+              onMouseLeave={e => { if (activeDock !== tab.key) e.currentTarget.style.color = 'var(--text-muted)'; }}
+              >
+                <DuotoneIcon svg={tab.icon} size={12} />
+                {tab.label}
+                {tab.indicator && <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#fb923c', position: 'absolute', top: 2, right: 2, animation: 'aiPulse 1.2s infinite' }} />}
+              </button>
+            ))}
           </div>
-        </aside>
+          {/* Panel body */}
+          <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+            {activeDock === 'properties' ? (
+              <EditorPropertiesPanel
+                elements={elements}
+                selectedId={selectedId}
+                selectedIds={selectedIds}
+                updateElement={updateElement}
+                updateElements={updateElements}
+                deleteElements={deleteElements}
+                defs={defs}
+                onAddGradient={addGradient}
+                onAddKeyframe={addKeyframe}
+                onAddFont={addFont}
+                onRemoveFont={removeFont}
+                onOpenCodeEditor={el => setCodeEditElement(el)}
+              />
+            ) : (
+              <EditorAiChat agent={agentRef} />
+            )}
+          </div>
+        </div>
       </div>
 
       {showKeymap && (

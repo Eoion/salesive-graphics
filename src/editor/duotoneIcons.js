@@ -81,4 +81,14 @@ export const ICONS = {
   sun: `<circle opacity="0.4" cx="12" cy="12" r="4" fill="currentColor"/><circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="1.5"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>`,
 
   moon: `<path opacity="0.4" d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" fill="currentColor"/><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>`,
+
+  send: `<circle opacity="0.15" cx="12" cy="12" r="10" fill="currentColor"/><path d="M12 17V7" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/><path d="M7.5 11.5L12 7L16.5 11.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>`,
+
+  attach: `<path opacity="0.4" d="M12 2.5C8.41015 2.5 5.5 5.41015 5.5 9V17C5.5 20.0376 7.96243 22.5 11 22.5C14.0376 22.5 16.5 20.0376 16.5 17V9.5C16.5 7.567 14.933 6 13 6C11.067 6 9.5 7.567 9.5 9.5V17C9.5 18.1046 10.3954 19 11.5 19C12.6046 19 13.5 18.1046 13.5 17V10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>`,
+
+  stop: `<path opacity="0.4" d="M2 12C2 6.47715 6.47715 2 12 2C17.5228 2 22 6.47715 22 12C22 17.5228 17.5228 22 12 22C6.47715 22 2 17.5228 2 12Z" fill="currentColor"/><path d="M2 12C2 6.47715 6.47715 2 12 2C17.5228 2 22 6.47715 22 12C22 17.5228 17.5228 22 12 22C6.47715 22 2 17.5228 2 12Z" stroke="currentColor" stroke-width="1.5"/><path d="M9 9H15V15H9V9Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>`,
+
+  history: `<path opacity="0.4" d="M12 22C6.47715 22 2 17.5228 2 12C2 6.47715 6.47715 2 12 2C17.5228 2 22 6.47715 22 12C22 17.5228 17.5228 22 12 22Z" fill="currentColor"/><path d="M12 7V12L15 15" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M3.05 9A10 10 0 0 1 6 4M2 7L3.5 9.5L6 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>`,
+
+  image2: `<path opacity="0.4" d="M2.5 12C2.5 7.52166 2.5 5.28249 3.89124 3.89124C5.28249 2.5 7.52166 2.5 12 2.5C16.4783 2.5 18.7175 2.5 20.1088 3.89124C21.5 5.28249 21.5 7.52166 21.5 12C21.5 16.4783 21.5 18.7175 20.1088 20.1088C18.7175 21.5 16.4783 21.5 12 21.5C7.52166 21.5 5.28249 21.5 3.89124 20.1088C2.5 18.7175 2.5 16.4783 2.5 12Z" fill="currentColor"/><path d="M5 21C8 16 11 13 15 15.5M13 11C13 12.1046 12.1046 13 11 13C9.89543 13 9 12.1046 9 11C9 9.89543 9.89543 9 11 9C12.1046 9 13 9.89543 13 11ZM19.5 9.5C17 11 15 13 13 16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>`,
 };

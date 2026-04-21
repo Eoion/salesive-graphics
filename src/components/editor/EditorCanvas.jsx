@@ -316,6 +316,7 @@ export default function EditorCanvas({
     onPick,
     eyedropperActive,
     onEyedrop,
+    agentHighlightId,
 }) {
     const outerRef = useRef();
     const svgRef = useRef();
@@ -378,6 +379,7 @@ export default function EditorCanvas({
         if (!canvasCtrl) return;
         canvasCtrl.current = {
             textEdit: (id) => setTextEditId(id),
+            getViewport: () => viewport,
             fitViewport,
             zoomIn: () =>
                 setViewport((v) => {
@@ -774,6 +776,23 @@ export default function EditorCanvas({
                         overflow: "visible",
                     }}
                 >
+                    {/* Agent highlight ring */}
+                    {agentHighlightId && (() => {
+                        const el = elements.find(e => e.id === agentHighlightId);
+                        if (!el || el.visible === false) return null;
+                        const b = elBounds(el);
+                        return (
+                            <rect
+                                x={b.x - 4} y={b.y - 4}
+                                width={Math.max(b.width, 1) + 8} height={Math.max(b.height, 1) + 8}
+                                fill="none" stroke="var(--accent)" strokeWidth={2}
+                                rx={4} ry={4}
+                                transform={rotTransform(el)}
+                                style={{ animation: 'agentHighlight 1s ease-in-out infinite' }}
+                                strokeDasharray="6 3"
+                            />
+                        );
+                    })()}
                     {/* Multi-selection outlines */}
                     {selectedIds.length > 1 && selectedIds
                         .filter(id => id !== selectedId)
