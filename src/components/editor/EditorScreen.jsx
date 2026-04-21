@@ -421,21 +421,47 @@ export default function EditorScreen({ canvasSize, onFinish }) {
     canvasCtrl.current.setZoomPct?.(pct);
   }
 
-  const buildEditorContext = useCallback(() => ({
-    canvasSize,
-    selectedId,
-    selectedIds,
-    elementCount: elements.length,
-    defsSummary: {
-      gradientCount: defs.gradients?.length || 0,
-      variableNames: (defs.variables || []).map(variable => variable.name),
-      keyframeNames: (defs.keyframes || []).map(keyframe => keyframe.name || keyframe.id),
-      fontNames: (defs.fonts || [])
-        .map(font => font?.name)
-        .filter(name => typeof name === 'string' && name.trim()),
-    },
-    svg: serializeElements(elements, canvasSize, defs),
-  }), [canvasSize, defs, elements, selectedId, selectedIds]);
+  const buildEditorContext = useCallback(() => {
+    const W = canvasSize.width;
+    const H = canvasSize.height;
+    const elementsWithBounds = elements.map(el => {
+      const w = el.width || 0;
+      const h = el.height || 0;
+      const oL = el.x < 0 ? -el.x : 0;
+      const oT = el.y < 0 ? -el.y : 0;
+      const oR = (el.x + w) > W ? (el.x + w) - W : 0;
+      const oB = (el.y + h) > H ? (el.y + h) - H : 0;
+      const hasOverflow = oL > 0 || oT > 0 || oR > 0 || oB > 0;
+      return {
+        id: el.id, type: el.type,
+        x: el.x, y: el.y, width: w, height: h,
+        right: el.x + w, bottom: el.y + h,
+        fill: el.fill, fontSize: el.fontSize,
+        text: el.type === 'text' ? el.text?.slice(0, 80) : undefined,
+        locked: el.locked, visible: el.visible !== false,
+        ...(hasOverflow ? { OVERFLOW: { left: oL, top: oT, right: oR, bottom: oB } } : {}),
+      };
+    });
+    const overflowCount = elementsWithBounds.filter(e => e.OVERFLOW).length;
+    return {
+      canvas: {
+        width: W, height: H,
+        origin: 'top-left (0,0). x increases →, y increases ↓.',
+        rule: `x >= 0, y >= 0, x+width <= ${W}, y+height <= ${H}`,
+        centerX: W / 2, centerY: H / 2,
+      },
+      selectedId, selectedIds,
+      elements: elementsWithBounds,
+      elementCount: elements.length,
+      ...(overflowCount > 0 ? { WARNING: `${overflowCount} element(s) overflow canvas bounds — call check_layout for details.` } : {}),
+      defsSummary: {
+        gradientCount: defs.gradients?.length || 0,
+        variableNames: (defs.variables || []).map(v => v.name),
+        fontNames: (defs.fonts || []).map(f => f?.name).filter(Boolean),
+      },
+      svg: serializeElements(elements, canvasSize, defs),
+    };
+  }, [canvasSize, defs, elements, selectedId, selectedIds]);
 
   const captureCanvasScreenshot = useCallback(async (options = {}) => {
     const svg = serializeElements(elements, canvasSize, defs);
