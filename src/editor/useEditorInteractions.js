@@ -3,7 +3,34 @@ import { makeElement } from './editorConstants.js';
 
 const MIN_SIZE = 4;
 
-function applyHandleDelta(el, handleId, dx, dy) {
+function clampToCanvas(x, y, width, height, handleId, cw, ch) {
+  if (cw === undefined) return { x, y, width, height };
+  // Right edge
+  if (x + width > cw) {
+    if (handleId === 'e' || handleId === 'ne' || handleId === 'se' || handleId === 'n' || handleId === 's') width = cw - x;
+    else x = cw - width;
+  }
+  // Bottom edge
+  if (y + height > ch) {
+    if (handleId === 's' || handleId === 'se' || handleId === 'sw' || handleId === 'e' || handleId === 'w') height = ch - y;
+    else y = ch - height;
+  }
+  // Left edge
+  if (x < 0) {
+    if (handleId === 'w' || handleId === 'nw' || handleId === 'sw') { width += x; x = 0; }
+    else x = 0;
+  }
+  // Top edge
+  if (y < 0) {
+    if (handleId === 'n' || handleId === 'nw' || handleId === 'ne') { height += y; y = 0; }
+    else y = 0;
+  }
+  width = Math.max(MIN_SIZE, width);
+  height = Math.max(MIN_SIZE, height);
+  return { x, y, width, height };
+}
+
+function applyHandleDelta(el, handleId, dx, dy, cw, ch) {
   let { x, y, width, height } = el;
 
   switch (handleId) {
@@ -27,10 +54,10 @@ function applyHandleDelta(el, handleId, dx, dy) {
     height = MIN_SIZE;
   }
 
-  return { x, y, width, height };
+  return clampToCanvas(x, y, width, height, handleId, cw, ch);
 }
 
-function applyHandleDeltaLocked(el, handleId, dx, dy) {
+function applyHandleDeltaLocked(el, handleId, dx, dy, cw, ch) {
   const ratio = el.width / el.height;
   let { x, y, width, height } = el;
 
@@ -62,7 +89,7 @@ function applyHandleDeltaLocked(el, handleId, dx, dy) {
     width = newW; height = newH;
   }
 
-  return { x, y, width, height };
+  return clampToCanvas(x, y, width, height, handleId, cw, ch);
 }
 
 export function useEditorInteractions({
@@ -175,20 +202,26 @@ export function useEditorInteractions({
 
     if (dragState.current.type === 'move') {
       const { moveIds, startPositions } = dragState.current;
+      const cw = canvasSize?.width;
+      const ch = canvasSize?.height;
       const patches = {};
       for (const id of moveIds) {
         const start = startPositions[id];
         if (start) {
-          patches[id] = {
-            x: snapVal(start.x + dx),
-            y: snapVal(start.y + dy),
-          };
+          const elData = elements.find(e => e.id === id);
+          let nx = snapVal(start.x + dx);
+          let ny = snapVal(start.y + dy);
+          if (cw !== undefined && elData) {
+            nx = Math.max(0, Math.min(nx, cw - (elData.width || 0)));
+            ny = Math.max(0, Math.min(ny, ch - (elData.height || 0)));
+          }
+          patches[id] = { x: nx, y: ny };
         }
       }
       updateElementsLive(patches);
     } else if (dragState.current.type === 'resize') {
       const fn = dragState.current.lockAspect ? applyHandleDeltaLocked : applyHandleDelta;
-      const updated = fn(startEl, dragState.current.handleId, dx, dy);
+      const updated = fn(startEl, dragState.current.handleId, dx, dy, canvasSize?.width, canvasSize?.height);
       updateElementLive(elId, updated);
     } else if (dragState.current.type === 'rotate') {
       const { screenCX, screenCY, startRotation, startAngle } = dragState.current;

@@ -191,7 +191,7 @@ export default function App() {
 
       {/* Editor — used for both new canvas AND uploaded SVGs */}
       {mode === 'editor' && canvasSize && (
-        <EditorScreen canvasSize={canvasSize} onFinish={handleEditorFinish} />
+        <EditorScreen canvasSize={canvasSize} onCanvasResize={setCanvasSize} onFinish={handleEditorFinish} />
       )}
 
       {/* Mapping */}

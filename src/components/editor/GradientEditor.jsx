@@ -1,12 +1,14 @@
 import { useState } from 'react';
 import ColorPicker from '../ColorPicker.jsx';
 
+
 export default function GradientEditor({ gradient, onSave, onClose }) {
   const [type, setType] = useState(gradient?.type || 'linear');
   const [stops, setStops] = useState(gradient?.stops?.length ? gradient.stops : [
     { offset: '0%', stopColor: '#3b82f6', stopOpacity: 1 },
     { offset: '100%', stopColor: '#8b5cf6', stopOpacity: 1 },
   ]);
+  const [openStopIdx, setOpenStopIdx] = useState(null);
   const [x1, setX1] = useState(gradient?.x1 || '0%');
   const [y1, setY1] = useState(gradient?.y1 || '0%');
   const [x2, setX2] = useState(gradient?.x2 || '100%');
@@ -89,9 +91,20 @@ export default function GradientEditor({ gradient, onSave, onClose }) {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
         <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Color Stops</span>
         {stops.map((s, i) => (
-          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <input type="color" value={s.stopColor} onChange={e => updateStop(i, { stopColor: e.target.value })}
-              style={{ width: 28, height: 24, border: '1px solid var(--border)', borderRadius: 4, padding: 0, cursor: 'pointer', background: 'none' }} />
+          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, position: 'relative' }}>
+            <button
+              onClick={() => setOpenStopIdx(openStopIdx === i ? null : i)}
+              style={{ width: 28, height: 24, borderRadius: 4, border: '1px solid var(--border)', background: s.stopColor, cursor: 'pointer', padding: 0, flexShrink: 0 }}
+            />
+            {openStopIdx === i && (
+              <div style={{ position: 'absolute', top: 28, left: 0, zIndex: 100 }}>
+                <ColorPicker
+                  value={s.stopColor}
+                  onChange={c => updateStop(i, { stopColor: c })}
+                  onClose={() => setOpenStopIdx(null)}
+                />
+              </div>
+            )}
             <input type="range" min={0} max={100} value={parseInt(s.offset)} onChange={e => updateStop(i, { offset: e.target.value + '%' })}
               style={{ flex: 1, accentColor: 'var(--accent)' }} />
             <span style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'DM Mono, monospace', width: 28 }}>{s.offset}</span>

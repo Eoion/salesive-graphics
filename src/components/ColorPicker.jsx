@@ -65,6 +65,18 @@ export default function ColorPicker({ value, onChange, onClose }) {
   const areaRef = useRef();
   const hueRef = useRef();
   const dragging = useRef(null);
+  const containerRef = useRef();
+
+  useEffect(() => {
+    if (!onClose) return;
+    function onDown(e) {
+      if (containerRef.current && !containerRef.current.contains(e.target)) {
+        onClose();
+      }
+    }
+    document.addEventListener('pointerdown', onDown, true);
+    return () => document.removeEventListener('pointerdown', onDown, true);
+  }, [onClose]);
 
   useEffect(() => {
     const [nh, ns, nv] = hexToHsv(hex);
@@ -124,7 +136,7 @@ export default function ColorPicker({ value, onChange, onClose }) {
   const currentHex = hsvToHex(hue, sat, val);
 
   return (
-    <div style={{
+    <div ref={containerRef} style={{
       background: 'var(--bg-surface)', border: '1px solid var(--border)',
       borderRadius: 10, padding: 12, width: 210,
       boxShadow: '0 12px 40px rgba(0,0,0,0.5)',

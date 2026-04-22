@@ -4,9 +4,12 @@ const HANDLE_SIZE = 8;
 const HALF = HANDLE_SIZE / 2;
 const ROTATE_OFFSET = 22;
 
+const EW_CURSOR_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M7 8L3 12L7 16" stroke="%230d65d9" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 8L21 12L17 16" stroke="%230d65d9" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><line x1="3" y1="12" x2="21" y2="12" stroke="%230d65d9" stroke-width="2" stroke-linecap="round"/></svg>`;
+const EW_CURSOR = `url("data:image/svg+xml,${EW_CURSOR_SVG}") 12 12, ew-resize`;
+
 const CURSORS = {
-  nw: 'var(--cursor-nw-resize)', n: 'var(--cursor-n-resize)', ne: 'var(--cursor-ne-resize)', e: 'var(--cursor-e-resize)',
-  se: 'var(--cursor-nw-resize)', s: 'var(--cursor-s-resize)', sw: 'var(--cursor-ne-resize)', w: 'var(--cursor-w-resize)',
+  nw: 'var(--cursor-nw-resize)', n: 'var(--cursor-n-resize)', ne: 'var(--cursor-ne-resize)', e: EW_CURSOR,
+  se: 'var(--cursor-nw-resize)', s: 'var(--cursor-s-resize)', sw: 'var(--cursor-ne-resize)', w: EW_CURSOR,
 };
 
 function handlePos(id, x, y, w, h) {

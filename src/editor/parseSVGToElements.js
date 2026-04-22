@@ -1,6 +1,27 @@
 // Parses an uploaded SVG string into editor element objects
 // that can be loaded into useEditorState.
 
+// Reusable off-screen SVG for path bbox measurement
+let _measureSvg = null;
+function getMeasureSvg() {
+  if (_measureSvg && document.body.contains(_measureSvg)) return _measureSvg;
+  _measureSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  _measureSvg.style.cssText = 'position:fixed;visibility:hidden;pointer-events:none;top:0;left:0;width:0;height:0;overflow:visible;';
+  document.body.appendChild(_measureSvg);
+  return _measureSvg;
+}
+
+function getPathBbox(d) {
+  if (typeof document === 'undefined' || !d) return null;
+  const svg = getMeasureSvg();
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('d', d);
+  svg.appendChild(path);
+  const b = path.getBBox();
+  svg.removeChild(path);
+  return (b.width > 0 || b.height > 0) ? { x: b.x, y: b.y, width: b.width, height: b.height } : null;
+}
+
 // Reads a CSS property from inline style OR direct attribute (style wins if both present).
 function sv(node, prop) {
   const styleStr = node.getAttribute('style') || '';
@@ -129,6 +150,27 @@ export function parseSVGToElements(svgString) {
           x, y, width, height, href,
           fill: '#cbd5e1', stroke: 'none', strokeWidth: 0,
           strokeDash: 'solid', strokeLinecap: 'butt', opacity,
+          visible: display !== 'none', locked: false, description: '',
+        });
+        break;
+      }
+      case 'path': {
+        const d = node.getAttribute('d') || '';
+        if (!d) break;
+        // Use pre-computed bbox if available (round-tripped from our serializer)
+        const dbx = parseFloat(node.getAttribute('data-bbox-x'));
+        const dby = parseFloat(node.getAttribute('data-bbox-y'));
+        const dbw = parseFloat(node.getAttribute('data-bbox-w'));
+        const dbh = parseFloat(node.getAttribute('data-bbox-h'));
+        let bbox = (!isNaN(dbx) && !isNaN(dby) && dbw > 0 && dbh > 0)
+          ? { x: dbx, y: dby, width: dbw, height: dbh }
+          : getPathBbox(d);
+        if (!bbox) break;
+        elements.push({
+          id, type: 'path', d,
+          x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height,
+          bboxX: bbox.x, bboxY: bbox.y, bboxWidth: bbox.width, bboxHeight: bbox.height,
+          fill, stroke, strokeWidth, strokeDash, strokeLinecap, opacity,
           visible: display !== 'none', locked: false, description: '',
         });
         break;

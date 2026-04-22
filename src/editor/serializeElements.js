@@ -94,7 +94,11 @@ function serializeOne(el) {
       })}${desc}${vis}${rot}${styleAttr}${rawAttrStr}>${esc(el.text || '')}</text>`;
     }
 
-    case 'image':
+    case 'image': {
+      let imgStyle = animStyle;
+      if (el.cssFilter) imgStyle += (imgStyle ? ' ' : '') + `filter: ${el.cssFilter};`;
+      if (el.rawStyle) imgStyle += (imgStyle ? ' ' : '') + el.rawStyle;
+      const imgStyleAttr = imgStyle ? ` style="${esc(imgStyle)}"` : '';
       return `<image ${attrs({
         id: el.id,
         x: el.x, y: el.y,
@@ -103,7 +107,36 @@ function serializeOne(el) {
         href: el.href || '',
         preserveAspectRatio: 'xMidYMid slice',
         opacity: el.opacity !== 1 ? el.opacity : undefined,
-      })}${vis}${rot}${styleAttr}${rawAttrStr} />`;
+      })}${vis}${rot}${imgStyleAttr}${rawAttrStr} />`;
+    }
+
+    case 'path': {
+      const bboxX = el.bboxX ?? el.x;
+      const bboxY = el.bboxY ?? el.y;
+      const bboxW = el.bboxWidth ?? el.width;
+      const bboxH = el.bboxHeight ?? el.height;
+      const sx = bboxW > 0 ? el.width / bboxW : 1;
+      const sy = bboxH > 0 ? el.height / bboxH : 1;
+      const tx = el.x - bboxX * sx;
+      const ty = el.y - bboxY * sy;
+      const posTransform = (sx !== 1 || sy !== 1 || tx !== 0 || ty !== 0)
+        ? `translate(${tx},${ty}) scale(${sx},${sy})` : undefined;
+      const rotStr = el.rotation
+        ? `rotate(${el.rotation},${el.x + el.width / 2},${el.y + el.height / 2})` : undefined;
+      const transformVal = [rotStr, posTransform].filter(Boolean).join(' ') || undefined;
+      return `<path ${attrs({
+        id: el.id, d: el.d || '',
+        fill: el.fill || 'none',
+        stroke: el.stroke !== 'none' ? el.stroke : undefined,
+        'stroke-width': el.strokeWidth || undefined,
+        'stroke-dasharray': da,
+        'stroke-linecap': lc,
+        opacity: el.opacity !== 1 ? el.opacity : undefined,
+        transform: transformVal,
+        'data-bbox-x': bboxX, 'data-bbox-y': bboxY,
+        'data-bbox-w': bboxW, 'data-bbox-h': bboxH,
+      })}${desc}${vis}${styleAttr}${rawAttrStr} />`;
+    }
 
     case 'line':
       return `<line ${attrs({

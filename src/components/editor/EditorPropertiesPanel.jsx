@@ -7,6 +7,65 @@ import GradientEditor from './GradientEditor.jsx';
 import AnimationPanel from './AnimationPanel.jsx';
 import { GOOGLE_FONTS } from '../../editor/googleFontsList.js';
 
+const FILTER_DEFS = [
+  { key: 'brightness', label: 'Brightness', min: 0, max: 200, default: 100, unit: '%' },
+  { key: 'contrast',   label: 'Contrast',   min: 0, max: 200, default: 100, unit: '%' },
+  { key: 'saturate',   label: 'Saturate',   min: 0, max: 200, default: 100, unit: '%' },
+  { key: 'grayscale',  label: 'Grayscale',  min: 0, max: 100, default: 0,   unit: '%' },
+  { key: 'sepia',      label: 'Sepia',      min: 0, max: 100, default: 0,   unit: '%' },
+  { key: 'hue-rotate', label: 'Hue Rotate', min: 0, max: 360, default: 0,   unit: 'deg' },
+  { key: 'blur',       label: 'Blur',       min: 0, max: 20,  default: 0,   unit: 'px', step: 0.5 },
+];
+
+function parseFilter(css) {
+  const vals = {};
+  for (const d of FILTER_DEFS) {
+    const m = new RegExp(`${d.key}\\(([\\d.]+)${d.unit}\\)`).exec(css);
+    vals[d.key] = m ? parseFloat(m[1]) : d.default;
+  }
+  return vals;
+}
+
+function buildFilter(vals) {
+  return FILTER_DEFS
+    .filter(d => vals[d.key] !== undefined && vals[d.key] !== d.default)
+    .map(d => `${d.key}(${vals[d.key]}${d.unit})`)
+    .join(' ');
+}
+
+function ImageFilters({ filter, onChange }) {
+  const vals = parseFilter(filter);
+  function set(key, v) {
+    const next = { ...vals, [key]: v };
+    onChange(buildFilter(next));
+  }
+  function reset() { onChange(''); }
+  const isDirty = filter && filter.trim();
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {FILTER_DEFS.map(d => (
+        <label key={d.key} style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{d.label}</span>
+            <span style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'DM Mono, monospace' }}>{vals[d.key]}{d.unit}</span>
+          </div>
+          <input type="range" min={d.min} max={d.max} step={d.step || 1}
+            value={vals[d.key]}
+            onChange={e => set(d.key, parseFloat(e.target.value))}
+            style={{ accentColor: 'var(--accent)' }}
+          />
+        </label>
+      ))}
+      {isDirty && (
+        <button onClick={reset} style={{
+          padding: '4px 8px', borderRadius: 5, border: '1px solid var(--border)',
+          background: 'var(--bg-raised)', color: 'var(--text-muted)', fontSize: 10, cursor: 'pointer',
+        }}>Reset Adjustments</button>
+      )}
+    </div>
+  );
+}
+
 function Label({ children }) {
   return (
     <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
@@ -215,7 +274,7 @@ export default function EditorPropertiesPanel({ elements, selectedId, selectedId
 
   if (!selectedEls.length) {
     return (
-      <aside style={{ width: 280, background: 'var(--bg-surface)', borderLeft: '1px solid var(--border)', flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+      <aside style={{ width: 280, background: 'var(--bg-surface)', borderLeft: '1px solid var(--border)', flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
         <div style={{ width: 36, height: 36, borderRadius: 8, border: '1px dashed var(--border-strong)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <span style={{ color: 'var(--text-muted)', fontSize: 18 }}>✦</span>
         </div>
@@ -227,7 +286,7 @@ export default function EditorPropertiesPanel({ elements, selectedId, selectedId
   }
 
   return (
-    <aside style={{ width: 280, background: 'var(--bg-surface)', borderLeft: '1px solid var(--border)', flexShrink: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+    <aside style={{ width: 280, background: 'var(--bg-surface)', borderLeft: '1px solid var(--border)', flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       {/* Header */}
       <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
         <Label>Properties</Label>
@@ -633,6 +692,13 @@ export default function EditorPropertiesPanel({ elements, selectedId, selectedId
                 )}
               </div>
             )}
+          </Section>
+        )}
+
+        {/* Image Adjustments */}
+        {el.type === 'image' && (
+          <Section title="Adjustments">
+            <ImageFilters filter={el.cssFilter || ''} onChange={v => upd({ cssFilter: v || undefined })} />
           </Section>
         )}
 

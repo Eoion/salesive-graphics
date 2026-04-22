@@ -185,6 +185,7 @@ export function useEditorAgent({ getEditorContext, clientToolHandlers = {} } = {
 
     socket.on('agent:token', (token) => {
       const content = typeof token === 'string' ? token : token?.content || token?.token || '';
+      if (!content) return;
       resetIdleTimer();
       setIsStreaming(true); setIsThinking(false); setIsAgentDone(false); setError(null);
       setAgentCursor(prev => ({ ...prev, phase: 'responding' }));
@@ -283,13 +284,16 @@ export function useEditorAgent({ getEditorContext, clientToolHandlers = {} } = {
         return;
       }
 
+      console.log('[Tool:Call]', tool, JSON.stringify(args, null, 2));
       try {
         const result = await handler(args || {});
         const serialized = typeof result === 'string' ? result : JSON.stringify(result);
+        console.log('[Tool:Result]', tool, parseMaybeJson(serialized));
         socket.emit('tool:response', { toolCallId: tcId, result: serialized });
         setMessages(prev => upsertToolCall(prev, { toolCallId: tcId, status: 'done', result: parseMaybeJson(serialized) }));
       } catch (err) {
         const msg = err?.message || String(err) || 'Tool execution failed.';
+        console.log('[Tool:Error]', tool, msg);
         socket.emit('tool:response', { toolCallId: tcId, error: msg });
         setMessages(prev => upsertToolCall(prev, { toolCallId: tcId, status: 'error', error: msg }));
       }

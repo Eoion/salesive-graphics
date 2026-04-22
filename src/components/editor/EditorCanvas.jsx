@@ -49,6 +49,34 @@ function elBounds(el) {
 
 // ── Element renderers ─────────────────────────────────────────────────────────
 
+function RenderPath({ el }) {
+    const bboxX = el.bboxX ?? el.x;
+    const bboxY = el.bboxY ?? el.y;
+    const bboxW = el.bboxWidth ?? el.width;
+    const bboxH = el.bboxHeight ?? el.height;
+    const sx = bboxW > 0 ? el.width / bboxW : 1;
+    const sy = bboxH > 0 ? el.height / bboxH : 1;
+    const tx = el.x - bboxX * sx;
+    const ty = el.y - bboxY * sy;
+    const posTransform = `translate(${tx},${ty}) scale(${sx},${sy})`;
+    const rot = rotTransform(el);
+    const transform = rot ? `${rot} ${posTransform}` : posTransform;
+    return (
+        <path
+            id={el.id}
+            d={el.d || ''}
+            fill={el.fill || 'none'}
+            stroke={el.stroke !== 'none' ? el.stroke : 'none'}
+            strokeWidth={el.strokeWidth || 0}
+            strokeDasharray={dashArray(el.strokeDash)}
+            strokeLinecap={el.strokeLinecap || 'butt'}
+            opacity={el.opacity}
+            transform={transform}
+            display={el.visible === false ? 'none' : undefined}
+        />
+    );
+}
+
 function RenderRect({ el }) {
     return (
         <rect
@@ -72,13 +100,17 @@ function RenderRect({ el }) {
 }
 
 function RenderCircle({ el }) {
+    const cx = el.cx ?? ((el.x ?? 0) + (el.width ?? 0) / 2);
+    const cy = el.cy ?? ((el.y ?? 0) + (el.height ?? 0) / 2);
+    const rx = Math.max(el.rx ?? el.r ?? (el.width ?? 0) / 2, 1);
+    const ry = Math.max(el.ry ?? el.r ?? (el.height ?? 0) / 2, 1);
     return (
         <ellipse
             id={el.id}
-            cx={el.x + el.width / 2}
-            cy={el.y + el.height / 2}
-            rx={Math.max(el.width / 2, 1)}
-            ry={Math.max(el.height / 2, 1)}
+            cx={cx}
+            cy={cy}
+            rx={rx}
+            ry={ry}
             fill={el.fill || "none"}
             stroke={el.stroke !== "none" ? el.stroke : "none"}
             strokeWidth={el.strokeWidth || 0}
@@ -158,6 +190,7 @@ function RenderImage({ el }) {
                     width={el.width}
                     height={el.height}
                     preserveAspectRatio="xMidYMid slice"
+                    style={el.cssFilter ? { filter: el.cssFilter } : undefined}
                 />
             )}
         </g>
@@ -165,13 +198,17 @@ function RenderImage({ el }) {
 }
 
 function RenderLine({ el }) {
+    const x1 = el.x1 ?? el.x ?? 0;
+    const y1 = el.y1 ?? el.y ?? 0;
+    const x2 = el.x2 ?? ((el.x ?? 0) + (el.width ?? 0));
+    const y2 = el.y2 ?? ((el.y ?? 0) + (el.height ?? 0));
     return (
         <line
             id={el.id}
-            x1={el.x}
-            y1={el.y}
-            x2={el.x + el.width}
-            y2={el.y + el.height}
+            x1={x1}
+            y1={y1}
+            x2={x2}
+            y2={y2}
             stroke={el.stroke !== "none" ? el.stroke || "#000" : "#000"}
             strokeWidth={el.strokeWidth || 2}
             strokeDasharray={dashArray(el.strokeDash)}
@@ -247,6 +284,7 @@ function ElementRenderer({ el }) {
         case "polygon": return <RenderPolygon el={el} />;
         case "star":    return <RenderStar    el={el} />;
         case "arrow":   return <RenderArrow   el={el} />;
+        case "path":    return <RenderPath    el={el} />;
         default:        return null;
     }
 }
@@ -505,6 +543,14 @@ export default function EditorCanvas({
         }
     }
 
+    // ── Shared marquee coordinate helper ─────────────────────────────────────
+    function clientToCanvas(clientX, clientY) {
+        const svgRect = svgRef.current?.getBoundingClientRect();
+        if (!svgRect) return { x: 0, y: 0 };
+        const scale = scaleRef?.current || 1;
+        return { x: (clientX - svgRect.left) / scale, y: (clientY - svgRect.top) / scale };
+    }
+
     // ── Pan and pointer routing ───────────────────────────────────────────────
     function handleOuterPointerDown(e) {
         if (spaceHeld || e.button === 1 || e.ctrlKey) {
@@ -516,6 +562,17 @@ export default function EditorCanvas({
                 ty: viewport.ty,
             };
             outerRef.current?.setPointerCapture(e.pointerId);
+        } else if (activeTool === 'select' && !isOverlayMode) {
+            // Start marquee from outside the SVG canvas
+            const clickedInsideCanvas = svgRef.current?.contains(e.target);
+            if (!clickedInsideCanvas) {
+                e.preventDefault();
+                const { x: startX, y: startY } = clientToCanvas(e.clientX, e.clientY);
+                marqueeStartRef.current = { x: startX, y: startY };
+                setMarquee({ x: startX, y: startY, width: 0, height: 0 });
+                setSelectedIds([]);
+                outerRef.current?.setPointerCapture(e.pointerId);
+            }
         }
     }
 
@@ -528,6 +585,16 @@ export default function EditorCanvas({
                 tx: panningRef.current.tx + dx,
                 ty: panningRef.current.ty + dy,
             }));
+        } else if (marqueeStartRef.current && !isPanMode) {
+            // Update marquee (handles both inside-canvas and outside-canvas drags)
+            const { x: curX, y: curY } = clientToCanvas(e.clientX, e.clientY);
+            const start = marqueeStartRef.current;
+            setMarquee({
+                x: Math.min(start.x, curX),
+                y: Math.min(start.y, curY),
+                width: Math.abs(curX - start.x),
+                height: Math.abs(curY - start.y),
+            });
         } else {
             onPointerMove(e);
         }
@@ -536,6 +603,19 @@ export default function EditorCanvas({
     function handleOuterPointerUp(e) {
         if (panningRef.current) {
             panningRef.current = null;
+        } else if (marqueeStartRef.current) {
+            marqueeStartRef.current = null;
+            if (marquee) {
+                const intersecting = elements.filter(el =>
+                    el.visible !== false && !el.locked &&
+                    rectsIntersect(marquee, elBounds(el))
+                );
+                setSelectedIds(intersecting.map(el => el.id));
+                setMarquee(null);
+                onMarqueeEnd?.(intersecting.map(el => el.id));
+            } else {
+                setMarquee(null);
+            }
         } else {
             onPointerUp(e);
         }
@@ -580,50 +660,22 @@ export default function EditorCanvas({
             return;
         }
 
-        // Select mode: start marquee on empty canvas.
-        // Element clicks stop propagation before reaching here.
+        // Select mode: start marquee. Element clicks stop propagation before reaching here.
         e.preventDefault();
-        const svgRect = svgRef.current?.getBoundingClientRect();
-        if (!svgRect) return;
-        const scale = scaleRef.current || 1;
-        const startX = (e.clientX - svgRect.left) / scale;
-        const startY = (e.clientY - svgRect.top) / scale;
+        const { x: startX, y: startY } = clientToCanvas(e.clientX, e.clientY);
         marqueeStartRef.current = { x: startX, y: startY };
         setMarquee({ x: startX, y: startY, width: 0, height: 0 });
         setSelectedIds([]);
     }
 
     function handleSvgPointerMove(e) {
-        if (!marqueeStartRef.current || isPanMode) return;
-        e.preventDefault();
-        const svgRect = svgRef.current?.getBoundingClientRect();
-        if (!svgRect) return;
-        const scale = scaleRef.current || 1;
-        const curX = (e.clientX - svgRect.left) / scale;
-        const curY = (e.clientY - svgRect.top) / scale;
-        const start = marqueeStartRef.current;
-        const x = Math.min(start.x, curX);
-        const y = Math.min(start.y, curY);
-        const w = Math.abs(curX - start.x);
-        const h = Math.abs(curY - start.y);
-        setMarquee({ x, y, width: w, height: h });
+        // Marquee coordinate updates are handled in handleOuterPointerMove via bubbling.
+        // Just suppress default to avoid text selection.
+        if (marqueeStartRef.current && !isPanMode) e.preventDefault();
     }
 
     function handleSvgPointerUp() {
-        if (!marquee) return;
-        marqueeStartRef.current = null;
-
-        // Find all elements intersecting the marquee rectangle
-        const marqueeRect = marquee;
-        const intersecting = elements.filter(el =>
-            el.visible !== false &&
-            !el.locked &&
-            rectsIntersect(marqueeRect, elBounds(el))
-        );
-
-        setSelectedIds(intersecting.map(el => el.id));
-        setMarquee(null);
-        onMarqueeEnd?.(intersecting.map(el => el.id));
+        // Delegated to handleOuterPointerUp via event bubbling.
     }
 
     return (
@@ -726,7 +778,7 @@ export default function EditorCanvas({
                                 pickerMode
                                     ? (e) => { e.stopPropagation(); onPick?.(el.id); }
                                     : eyedropperActive
-                                      ? (e) => { e.stopPropagation(); onEyedrop?.(el.id, e.shiftKey); }
+                                      ? (e) => { e.stopPropagation(); onEyedrop?.(el.id, e.shiftKey, e.clientX, e.clientY); }
                                       : isPanMode
                                         ? undefined
                                         : (e) => onElementPointerDown(e, el.id)
@@ -825,6 +877,7 @@ export default function EditorCanvas({
                         width={canvasSize.width}
                         height={canvasSize.height}
                         viewBox={`0 0 ${canvasSize.width} ${canvasSize.height}`}
+                        overflow="visible"
                         style={{
                             position: "absolute",
                             inset: 0,
