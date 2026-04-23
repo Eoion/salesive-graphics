@@ -3,7 +3,7 @@ import SelectionHandles from "./SelectionHandles.jsx";
 import { polygonPoints, starPoints, arrowheadPoints } from "../../editor/shapeHelpers.js";
 import { colorizeInlineSvgHref } from "../../editor/svgIconHref.js";
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// -- Helpers -------------------------------------------------------------------
 
 const DASH_PRESETS = { solid: undefined, dashed: '8,4', dotted: '2,4' };
 function dashArray(d) { return DASH_PRESETS[d]; }
@@ -48,7 +48,7 @@ function elBounds(el) {
     return { x: el.x, y: el.y, width: el.width, height: el.height };
 }
 
-// ── Element renderers ─────────────────────────────────────────────────────────
+// -- Element renderers ---------------------------------------------------------
 
 function RenderPath({ el }) {
     const bboxX = el.bboxX ?? el.x;
@@ -319,7 +319,7 @@ function ElementRenderer({ el }) {
     }
 }
 
-// ── Floating text editor ──────────────────────────────────────────────────────
+// -- Floating text editor ------------------------------------------------------
 
 function FloatingTextEditor({ el, scale, canvasRect, onCommit, onDismiss }) {
     if (!el || !canvasRect) return null;
@@ -353,7 +353,7 @@ function FloatingTextEditor({ el, scale, canvasRect, onCommit, onDismiss }) {
     );
 }
 
-// ── Main component ────────────────────────────────────────────────────────────
+// -- Main component ------------------------------------------------------------
 
 const PICK_COLORS = {
     text: "#8B5CF6",
@@ -366,7 +366,7 @@ const PICK_COLORS = {
     arrow: "#6366F1",
 };
 
-export default function EditorCanvas({
+function EditorCanvas({
     elements,
     defs,
     selectedId,
@@ -1005,7 +1005,7 @@ export default function EditorCanvas({
                                 pointerEvents: "none", boxShadow: "0 2px 8px rgba(0,0,0,0.4)",
                                 zIndex: 10,
                             }}>
-                                {hoveredEl.id} · {hoveredEl.type} · {Math.round(hoveredEl.width)}×{Math.round(hoveredEl.height)}
+                                {hoveredEl.id} | {hoveredEl.type} | {Math.round(hoveredEl.width)}x{Math.round(hoveredEl.height)}
                             </div>
                         )}
                         {/* Corner dots */}
@@ -1047,3 +1047,6 @@ export default function EditorCanvas({
         </div>
     );
 }
+
+export default EditorCanvas;
+
