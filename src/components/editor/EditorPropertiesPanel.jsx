@@ -1,11 +1,12 @@
-import { useState, useRef } from 'react';
-import { AlignLeft, AlignCenter, AlignRight } from 'lucide-react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { AlignLeft, AlignCenter, AlignRight, Bold, Italic, Underline, Strikethrough, CaseUpper } from 'lucide-react';
 import ColorPicker from '../ColorPicker.jsx';
 import DuotoneIcon from '../DuotoneIcon.jsx';
 import { ICONS } from '../../editor/duotoneIcons.js';
 import GradientEditor from './GradientEditor.jsx';
 import AnimationPanel from './AnimationPanel.jsx';
 import { GOOGLE_FONTS } from '../../editor/googleFontsList.js';
+import { getInlineSvgPaintChannels, isInlineSvgDataUrl } from '../../editor/svgIconHref.js';
 
 const FILTER_DEFS = [
   { key: 'brightness', label: 'Brightness', min: 0, max: 200, default: 100, unit: '%' },
@@ -93,7 +94,7 @@ function NumInput({ label, value, onChange, min, max, step = 1, style = {} }) {
   );
 }
 
-function ColorInput({ label, value, onChange }) {
+function ColorInput({ label, value, onChange, swatches }) {
   const [open, setOpen] = useState(false);
   return (
     <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -122,7 +123,7 @@ function ColorInput({ label, value, onChange }) {
         />
         {open && (
           <div style={{ position: 'absolute', top: 34, left: 0, zIndex: 50 }}>
-            <ColorPicker value={value} onChange={onChange} onClose={() => setOpen(false)} />
+            <ColorPicker value={value} onChange={onChange} onClose={() => setOpen(false)} swatches={swatches} />
           </div>
         )}
       </div>
@@ -181,6 +182,149 @@ function Section({ title, children }) {
   );
 }
 
+
+function CustomFontSelect({ value, options, onChange }) {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onClick = (e) => {
+      if (containerRef.current && !containerRef.current.contains(e.target)) setOpen(false);
+    };
+    window.addEventListener('mousedown', onClick);
+    return () => window.removeEventListener('mousedown', onClick);
+  }, [open]);
+
+  const currentLabel = value;
+
+  return (
+    <div ref={containerRef} style={{ position: 'relative', width: '100%' }}>
+      <div
+        onClick={() => setOpen(!open)}
+        style={{
+          width: '100%', background: 'var(--bg-raised)', border: '1px solid var(--border)',
+          color: 'var(--text-primary)', borderRadius: 6, padding: '5px 8px',
+          fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center',
+          justifyContent: 'space-between', boxSizing: 'border-box',
+        }}
+      >
+        <span style={{ 
+          fontFamily: value, 
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          fontSize: 13,
+        }}>
+          {currentLabel}
+        </span>
+        <span style={{ fontSize: 10, opacity: 0.5 }}>▼</span>
+      </div>
+
+      {open && (
+        <div style={{
+          position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 1000,
+          background: 'var(--bg-surface)', border: '1px solid var(--border)',
+          borderRadius: 6, marginTop: 4, overflowX: 'hidden', overflowY: 'auto',
+          maxHeight: 250, boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+          padding: '4px 0',
+        }}>
+          {options.map((grp, gi) => (
+            <div key={gi}>
+              {grp.label && (
+                <div style={{ 
+                  padding: '6px 10px', fontSize: 9, fontWeight: 700, 
+                  color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em',
+                  background: 'rgba(255,255,255,0.02)',
+                  borderBottom: '1px solid rgba(255,255,255,0.03)',
+                  marginBottom: 2,
+                }}>
+                  {grp.label}
+                </div>
+              )}
+              {grp.items.map((f, i) => (
+                <div
+                  key={i}
+                  onMouseDown={() => { onChange(f); setOpen(false); }}
+                  style={{
+                    padding: '8px 10px', cursor: 'pointer',
+                    background: value === f ? 'var(--accent-dim)' : 'transparent',
+                    color: value === f ? 'var(--accent)' : 'var(--text-primary)',
+                    display: 'flex', alignItems: 'center', transition: 'background 0.1s',
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.05)'}
+                  onMouseLeave={e => e.currentTarget.style.background = value === f ? 'var(--accent-dim)' : 'transparent'}
+                >
+                  <span style={{ fontFamily: f, fontSize: 14 }}>{f}</span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function GoogleFontSuggestion({ name, active, onCommit, onMouseEnter, isLast }) {
+  const [status, setStatus] = useState('pending'); // pending, loading, loaded, error
+
+  useEffect(() => {
+    let activeEffect = true;
+    
+    // Inject link tag for preview
+    const linkId = `font-preview-${name.replace(/\s+/g, '-')}`;
+    let link = document.getElementById(linkId);
+    if (!link) {
+      link = document.createElement('link');
+      link.id = linkId;
+      link.rel = 'stylesheet';
+      link.href = `https://fonts.googleapis.com/css2?family=${encodeURIComponent(name)}:wght@400&text=${encodeURIComponent(name)}&display=swap`;
+      document.head.appendChild(link);
+    }
+    
+    setStatus('loading');
+    
+    // Detect load using FontFaceSet API
+    document.fonts.load(`12px "${name}"`).then((fonts) => {
+      if (activeEffect) {
+        setStatus(fonts.length > 0 ? 'loaded' : 'error');
+      }
+    }).catch(() => {
+      if (activeEffect) setStatus('error');
+    });
+
+    return () => { activeEffect = false; };
+  }, [name]);
+
+  return (
+    <div
+      onMouseDown={() => onCommit(name)}
+      onMouseEnter={onMouseEnter}
+      style={{
+        padding: '8px 10px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        background: active ? 'var(--accent-dim)' : 'transparent',
+        borderBottom: !isLast ? '1px solid rgba(255,255,255,0.04)' : 'none',
+        transition: 'background 0.1s',
+      }}
+    >
+      <span style={{ 
+        fontSize: 14, 
+        fontFamily: status === 'loaded' ? `"${name}", sans-serif` : 'sans-serif',
+        color: active ? 'var(--accent)' : 'var(--text-primary)',
+        opacity: status === 'loaded' ? 1 : 0.6,
+        transition: 'font-family 0.3s, opacity 0.3s',
+      }}>
+        {name}
+      </span>
+      {status === 'loading' && (
+        <div className="ai-spin" style={{
+          width: 10, height: 10, borderRadius: '50%',
+          border: '1.5px solid var(--border-strong)', borderTopColor: 'var(--accent)',
+        }} />
+      )}
+    </div>
+  );
+}
+
 function FontAutocomplete({ defs, onAddFont, onSelect }) {
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
@@ -191,10 +335,8 @@ function FontAutocomplete({ defs, onAddFont, onSelect }) {
   const loaded = (defs?.fonts || [])
     .map(f => f?.name)
     .filter(name => typeof name === 'string' && name.trim());
-  const suggestions = query.trim().length < 1 ? [] :
-    GOOGLE_FONTS
-      .filter(f => f.toLowerCase().includes(query.toLowerCase()) && !loaded.includes(f))
-      .slice(0, 10);
+  const suggestions = GOOGLE_FONTS
+    .filter(f => (!query.trim() || f.toLowerCase().includes(query.toLowerCase())) && !loaded.includes(f));
 
   function commit(name) {
     onAddFont?.({ type: 'google', name });
@@ -234,22 +376,19 @@ function FontAutocomplete({ defs, onAddFont, onSelect }) {
         <div ref={listRef} style={{
           position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 200,
           background: 'var(--bg-surface)', border: '1px solid var(--border)',
-          borderRadius: 6, marginTop: 2, overflow: 'hidden',
+          borderRadius: 6, marginTop: 2, overflowX: 'hidden', overflowY: 'auto',
+          maxHeight: 400,
           boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
         }}>
           {suggestions.map((name, i) => (
-            <div key={name}
-              onMouseDown={() => commit(name)}
+            <GoogleFontSuggestion
+              key={name}
+              name={name}
+              active={i === cursor}
+              onCommit={commit}
               onMouseEnter={() => setCursor(i)}
-              style={{
-                padding: '6px 10px', cursor: 'pointer', fontSize: 12,
-                fontFamily: name,
-                background: i === cursor ? 'var(--accent-dim)' : 'transparent',
-                color: i === cursor ? 'var(--accent)' : 'var(--text-secondary)',
-                borderBottom: i < suggestions.length - 1 ? '1px solid rgba(255,255,255,0.04)' : 'none',
-                transition: 'background 0.08s',
-              }}
-            >{name}</div>
+              isLast={i === suggestions.length - 1}
+            />
           ))}
         </div>
       )}
@@ -262,6 +401,56 @@ export default function EditorPropertiesPanel({ elements, selectedId, selectedId
   const selectedEls = elements.filter(e => selectedIds.includes(e.id));
   const safeFonts = (defs?.fonts || []).filter(font => typeof font?.name === 'string' && font.name.trim());
   const [showGradientEditor, setShowGradientEditor] = useState(false);
+  const textInputRef = useRef(null);
+
+  // Auto-focus and select text when a new text element is added
+  useEffect(() => {
+    if (el && el.type === 'text' && el.isNewText && textInputRef.current) {
+      // Small timeout to ensure the panel has rendered/settled
+      const t = setTimeout(() => {
+        if (!textInputRef.current) return;
+        textInputRef.current.focus();
+        textInputRef.current.select();
+        // Clear the flag so it only happens once
+        updateElement(el.id, { isNewText: false });
+      }, 50);
+      return () => clearTimeout(t);
+    }
+  }, [selectedId, el?.isNewText]);
+
+  const [recentColors, setRecentColors] = useState(() => {
+    try {
+      const saved = localStorage.getItem('salesive_recent_colors');
+      return saved ? JSON.parse(saved) : [];
+    } catch { return []; }
+  });
+
+  const addRecentColor = useCallback((color) => {
+    if (!color || typeof color !== 'string' || color === 'none' || !color.startsWith('#')) return;
+    const low = color.toLowerCase();
+    setRecentColors(prev => {
+      const next = [low, ...prev.filter(c => c !== low)].slice(0, 10);
+      try { localStorage.setItem('salesive_recent_colors', JSON.stringify(next)); } catch{}
+      return next;
+    });
+  }, []);
+
+  const canvasColors = useMemo(() => {
+    const colors = new Set();
+    elements.forEach(e => {
+      if (e.fill && e.fill.startsWith('#')) colors.add(e.fill.toLowerCase());
+      if (e.stroke && e.stroke.startsWith('#')) colors.add(e.stroke.toLowerCase());
+      if (e.iconColors) Object.values(e.iconColors).forEach(c => {
+        if (c && typeof c === 'string' && c.startsWith('#')) colors.add(c.toLowerCase());
+      });
+    });
+    return Array.from(colors);
+  }, [elements]);
+
+  const swatches = useMemo(() => {
+    const combined = new Set([...recentColors, ...canvasColors]);
+    return Array.from(combined).slice(0, 18);
+  }, [recentColors, canvasColors]);
 
   // Batch helpers
   const hasLocked = selectedEls.some(e => e.locked);
@@ -269,8 +458,18 @@ export default function EditorPropertiesPanel({ elements, selectedId, selectedId
   const hasVisible = selectedEls.some(e => e.visible !== false);
   const hasHidden = selectedEls.some(e => e.visible === false);
 
-  const upd = (patch) => updateElement(el.id, patch);
-  const updBatch = (patch) => updateElements(selectedEls.map(e => e.id), patch);
+  const upd = (patch) => {
+    if (patch.fill) addRecentColor(patch.fill);
+    if (patch.stroke) addRecentColor(patch.stroke);
+    if (patch.iconColors) Object.values(patch.iconColors).forEach(addRecentColor);
+    updateElement(el.id, patch);
+  };
+  const updBatch = (patch) => {
+    if (patch.fill) addRecentColor(patch.fill);
+    if (patch.stroke) addRecentColor(patch.stroke);
+    if (patch.iconColors) Object.values(patch.iconColors).forEach(addRecentColor);
+    updateElements(selectedEls.map(e => e.id), patch);
+  };
 
   if (!selectedEls.length) {
     return (
@@ -478,9 +677,9 @@ export default function EditorPropertiesPanel({ elements, selectedId, selectedId
         {el.type !== 'image' && (
           <Section title="Fill & Stroke">
             {el.type !== 'line' && (
-              <ColorInput label="Fill" value={el.fill} onChange={v => upd({ fill: v })} />
+              <ColorInput label="Fill" value={el.fill} onChange={v => upd({ fill: v })} swatches={swatches} />
             )}
-            <ColorInput label="Stroke" value={el.stroke} onChange={v => upd({ stroke: v })} />
+            <ColorInput label="Stroke" value={el.stroke} onChange={v => upd({ stroke: v })} swatches={swatches} />
             {el.stroke !== 'none' && (
               <>
                 <NumInput label="Stroke Width" value={el.strokeWidth || 0} min={0} max={100} onChange={v => upd({ strokeWidth: v })} />
@@ -510,6 +709,7 @@ export default function EditorPropertiesPanel({ elements, selectedId, selectedId
             <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               <Label>Content</Label>
               <textarea
+                ref={textInputRef}
                 value={el.text || ''}
                 rows={2}
                 onChange={e => upd({ text: e.target.value })}
@@ -535,7 +735,69 @@ export default function EditorPropertiesPanel({ elements, selectedId, selectedId
                 </select>
               </label>
             </Row>
-            {/* Alignment */}
+            <div>
+              <Label>Formatting</Label>
+              <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
+                {[
+                  { key: 'fontWeight',    val: 'bold',      off: 'normal',  icon: <Bold size={13} /> },
+                  { key: 'fontStyle',     val: 'italic',    off: 'normal',  icon: <Italic size={13} /> },
+                  { key: 'textDecoration', val: 'underline', off: 'none',    icon: <Underline size={13} /> },
+                  { key: 'textDecoration', val: 'line-through', toggle: true, icon: <Strikethrough size={13} />, isStrikethrough: true },
+                  { key: 'textTransform',  val: 'uppercase', off: 'none',   icon: <CaseUpper size={13} /> },
+                ].map((item) => {
+                  const isActive = item.isStrikethrough 
+                    ? el.textDecoration?.includes('line-through')
+                    : (el[item.key] === item.val);
+                  
+                  return (
+                    <button key={item.key + item.val} onClick={() => {
+                        if (item.isStrikethrough) {
+                            const current = el.textDecoration || 'none';
+                            const next = current.includes('line-through') 
+                                ? current.replace('line-through', '').trim() || 'none'
+                                : (current === 'none' ? 'line-through' : current + ' line-through');
+                            upd({ textDecoration: next });
+                        } else if (item.key === 'textDecoration') {
+                             const current = el.textDecoration || 'none';
+                             const next = current.includes('underline')
+                                ? current.replace('underline', '').trim() || 'none'
+                                : (current === 'none' ? 'underline' : current + ' underline');
+                            upd({ textDecoration: next });
+                        } else {
+                            upd({ [item.key]: isActive ? item.off : item.val });
+                        }
+                    }} style={{
+                      flex: 1, padding: '6px 0', borderRadius: 6, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      background: isActive ? 'var(--accent-dim)' : 'var(--bg-raised)',
+                      outline: isActive ? '1px solid var(--accent)' : '1px solid var(--border)',
+                      color: isActive ? 'var(--accent)' : 'var(--text-muted)',
+                    }}>
+                      {item.icon}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <Row>
+              <NumInput 
+                label="Tracking" 
+                value={el.letterSpacing || 0} 
+                step={0.5} 
+                onChange={v => upd({ letterSpacing: v })} 
+                style={{ flex: 1 }} 
+              />
+              <NumInput 
+                label="Leading" 
+                value={el.lineHeight || 1.2} 
+                step={0.1} 
+                min={0.5} 
+                max={5} 
+                onChange={v => upd({ lineHeight: v })} 
+                style={{ flex: 1 }} 
+              />
+            </Row>
+
             <div>
               <Label>Align</Label>
               <div style={{ display: 'flex', gap: 5, marginTop: 6 }}>
@@ -558,21 +820,20 @@ export default function EditorPropertiesPanel({ elements, selectedId, selectedId
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               <Label>Font Family</Label>
               {/* Font selector — built-in + loaded fonts */}
-              <select value={el.fontFamily || 'sans-serif'} onChange={e => upd({ fontFamily: e.target.value })}
-                style={{ width: '100%', background: 'var(--bg-raised)', border: '1px solid var(--border)', color: 'var(--text-primary)', borderRadius: 6, padding: '5px 8px', fontSize: 12, outline: 'none' }}>
-                <optgroup label="System">
-                  {['sans-serif','serif','monospace','Georgia','Arial','Helvetica','Verdana','Trebuchet MS','Syne'].map(f => (
-                    <option key={f} value={f}>{f}</option>
-                  ))}
-                </optgroup>
-                {safeFonts.length > 0 && (
-                  <optgroup label="Loaded Fonts">
-                    {safeFonts.map(f => (
-                      <option key={f.name} value={f.name}>{f.name}</option>
-                    ))}
-                  </optgroup>
-                )}
-              </select>
+              <CustomFontSelect
+                value={el.fontFamily || 'sans-serif'}
+                onChange={f => upd({ fontFamily: f })}
+                options={[
+                  {
+                    label: 'System',
+                    items: ['sans-serif','serif','monospace','Georgia','Arial','Helvetica','Verdana','Trebuchet MS','Syne']
+                  },
+                  ...(safeFonts.length > 0 ? [{
+                    label: 'Loaded Fonts',
+                    items: safeFonts.map(f => f.name)
+                  }] : [])
+                ]}
+              />
               {/* Google Font autocomplete */}
               <FontAutocomplete
                 defs={defs}
@@ -611,7 +872,7 @@ export default function EditorPropertiesPanel({ elements, selectedId, selectedId
                 />
               </label>
             </div>
-            <ColorInput label="Text Color" value={el.fill} onChange={v => upd({ fill: v })} />
+            <ColorInput label="Text Color" value={el.fill} onChange={v => upd({ fill: v })} swatches={swatches} />
           </Section>
         )}
 
@@ -657,6 +918,19 @@ export default function EditorPropertiesPanel({ elements, selectedId, selectedId
                 onBlur={e => e.target.style.borderColor = 'var(--border)'}
               />
             </label>
+            {isInlineSvgDataUrl(el.href) && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {getInlineSvgPaintChannels(el.href).map(channel => (
+                  <ColorInput
+                    key={channel.key}
+                    label={`Icon ${channel.label}`}
+                    value={el.iconColors?.[channel.key] || channel.original || '#000000'}
+                    swatches={swatches}
+                    onChange={v => upd({ iconColors: { ...(el.iconColors || {}), [channel.key]: v } })}
+                  />
+                ))}
+              </div>
+            )}
             {el.href && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 {el.href.startsWith('data:') && (

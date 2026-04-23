@@ -220,8 +220,15 @@ export function useEditorInteractions({
       }
       updateElementsLive(patches);
     } else if (dragState.current.type === 'resize') {
-      const fn = dragState.current.lockAspect ? applyHandleDeltaLocked : applyHandleDelta;
+      const isText = startEl.type === 'text';
+      const fn = (isText || dragState.current.lockAspect) ? applyHandleDeltaLocked : applyHandleDelta;
       const updated = fn(startEl, dragState.current.handleId, dx, dy, canvasSize?.width, canvasSize?.height);
+      
+      if (isText) {
+        const scale = updated.height / (startEl.height || 1);
+        updated.fontSize = Math.max(1, Math.round((startEl.fontSize || 24) * scale));
+      }
+      
       updateElementLive(elId, updated);
     } else if (dragState.current.type === 'rotate') {
       const { screenCX, screenCY, startRotation, startAngle } = dragState.current;

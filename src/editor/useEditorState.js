@@ -26,8 +26,14 @@ function storeElements(els) {
   try { localStorage.setItem(LS_KEY, JSON.stringify(els)); } catch {}
 }
 
-export function useEditorState() {
-  const [elements, setElementsState] = useState(() => loadElements() || []);
+export function useEditorState(initialElements = null) {
+  const [elements, setElementsState] = useState(() => {
+    if (initialElements && initialElements.length) {
+      syncCounter(initialElements);
+      return initialElements;
+    }
+    return loadElements() || [];
+  });
   const [selectedId, _setSelectedId]   = useState(null);
   const [selectedIds, _setSelectedIds] = useState([]);
   const [historySize, setHistorySize]  = useState({ past: 0, future: 0 });

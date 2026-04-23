@@ -1,6 +1,10 @@
-import { useRef, useEffect, useLayoutEffect, useState } from "react";
+import { useRef, useEffect, useLayoutEffect, useState, useMemo } from "react";
 import SelectionHandles from "./SelectionHandles.jsx";
+import DuotoneIcon from "../DuotoneIcon.jsx";
+import { ICONS } from "../../editor/duotoneIcons.js";
 import { polygonPoints, starPoints, arrowheadPoints } from "../../editor/shapeHelpers.js";
+import { colorizeInlineSvgHref } from "../../editor/svgIconHref.js";
+import { freshId } from "../../editor/editorConstants.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -124,12 +128,17 @@ function RenderCircle({ el }) {
 }
 
 function RenderText({ el }) {
+    const fontSize = el.fontSize || 24;
+    const lineHeight = el.lineHeight || 1.2;
+    const lines = useMemo(() => (el.text || "").split("\n"), [el.text]);
+    const baselineY = useMemo(() => el.y + fontSize, [el.y, fontSize]);
+
     return (
         <text
             id={el.id}
             x={el.x}
-            y={el.y + (el.fontSize || 24)}
-            fontSize={el.fontSize || 24}
+            y={baselineY}
+            fontSize={fontSize}
             fontWeight={el.fontWeight || "normal"}
             fontFamily={el.fontFamily || "sans-serif"}
             textAnchor={el.textAnchor || "start"}
@@ -137,14 +146,47 @@ function RenderText({ el }) {
             opacity={el.opacity}
             transform={rotTransform(el)}
             display={el.visible === false ? "none" : undefined}
+            style={{
+                userSelect: "none",
+                letterSpacing: el.letterSpacing ? `${el.letterSpacing}px` : undefined,
+                fontStyle: el.fontStyle || "normal",
+                textDecoration: el.textDecoration || "none",
+                textTransform: el.textTransform || "none",
+                whiteSpace: "pre",
+            }}
         >
-            {el.text || ""}
+            {lines.map((line, i) => (
+                <tspan
+                    key={i}
+                    x={el.x}
+                    dy={i === 0 ? 0 : fontSize * lineHeight}
+                >
+                    {line || " "}
+                </tspan>
+            ))}
         </text>
     );
 }
 
+
+
 function RenderImage({ el }) {
-    const hasHref = el.href && el.href.trim();
+    const hasHref = !!(el.href && el.href.trim());
+    const processedHref = useMemo(() => {
+        return hasHref ? colorizeInlineSvgHref(el.href, el.iconColors) : null;
+    }, [el.href, el.iconColors, hasHref]);
+
+    const rectProps = useMemo(() => ({
+        x: el.x,
+        y: el.y,
+        width: Math.max(el.width, 1),
+        height: Math.max(el.height, 1),
+        fill: hasHref ? "none" : "#cbd5e1",
+        stroke: hasHref ? "none" : "#94a3b8",
+        strokeWidth: 1,
+        strokeDasharray: hasHref ? "none" : "6 3",
+    }), [el.x, el.y, el.width, el.height, hasHref]);
+
     return (
         <g
             id={el.id}
@@ -152,16 +194,7 @@ function RenderImage({ el }) {
             transform={rotTransform(el)}
             display={el.visible === false ? "none" : undefined}
         >
-            <rect
-                x={el.x}
-                y={el.y}
-                width={Math.max(el.width, 1)}
-                height={Math.max(el.height, 1)}
-                fill={hasHref ? "none" : "#cbd5e1"}
-                stroke="#94a3b8"
-                strokeWidth={1}
-                strokeDasharray={hasHref ? "none" : "6 3"}
-            />
+            <rect {...rectProps} />
             {!hasHref && (
                 <>
                     <line
@@ -184,7 +217,7 @@ function RenderImage({ el }) {
             )}
             {hasHref && (
                 <image
-                    href={el.href}
+                    href={processedHref}
                     x={el.x}
                     y={el.y}
                     width={el.width}
@@ -326,9 +359,14 @@ function FloatingTextEditor({ el, scale, canvasRect, onCommit, onDismiss }) {
 // ── Main component ────────────────────────────────────────────────────────────
 
 const PICK_COLORS = {
-    rect: "#0D65D9", circle: "#0D65D9", text: "#3b82f6",
-    image: "#c084fc", line: "#0D65D9",
-    polygon: "#10b981", star: "#f59e0b", arrow: "#0D65D9",
+    text: "#8B5CF6",
+    rect: "#0D65D9",
+    circle: "#EAB308",
+    line: "#64748b",
+    image: "#10B981",
+    polygon: "#EC4899",
+    star: "#F43F5E",
+    arrow: "#6366F1",
 };
 
 export default function EditorCanvas({
@@ -355,7 +393,63 @@ export default function EditorCanvas({
     eyedropperActive,
     onEyedrop,
     agentHighlightId,
+    isWorking = false,
+    inspectMode = false,
+    addElement,
 }) {
+    const [contextMenu, setContextMenu] = useState({ x: 0, y: 0, visible: false });
+
+    // Close menu on click outside
+    useEffect(() => {
+        if (!contextMenu.visible) return;
+        const hide = () => setContextMenu({ x: 0, y: 0, visible: false });
+        window.addEventListener("mousedown", hide);
+        return () => window.removeEventListener("mousedown", hide);
+    }, [contextMenu.visible]);
+
+    function handleContextMenu(e) {
+        e.preventDefault();
+        setContextMenu({ x: e.clientX, y: e.clientY, visible: true });
+    }
+
+    function handleAddFromMenu(toolId) {
+        const { x, y } = clientToCanvas(contextMenu.x, contextMenu.y);
+        setContextMenu({ x: 0, y: 0, visible: false });
+
+        if (toolId === 'select') return;
+        if (toolId === 'eyedropper') return;
+
+        // Default dimensions and styles for new elements
+        const defaults = {
+            rect: { width: 100, height: 100, fill: "#0D65D9" },
+            circle: { width: 100, height: 100, fill: "#EAB308" },
+            text: { width: 150, height: 40, text: "New Text", fontSize: 24, fill: "#000000" },
+            polygon: { width: 100, height: 100, fill: "#EC4899", sides: 6 },
+            star: { width: 100, height: 100, fill: "#F43F5E", spikes: 5, innerRadius: 0.5 },
+            line: { width: 200, height: 0, stroke: "#64748B", strokeWidth: 2 },
+            arrow: { width: 200, height: 0, stroke: "#6366F1", strokeWidth: 2 }
+        };
+
+        const config = defaults[toolId];
+        if (!config) return;
+
+        addElement({
+            type: toolId,
+            id: freshId(toolId),
+            x: Math.round(x - (config.width / 2)),
+            y: Math.round(y - (config.height / 2)),
+            opacity: 1,
+            visible: true,
+            locked: false,
+            stroke: config.stroke || 'none',
+            strokeWidth: config.strokeWidth ?? 0,
+            strokeDash: 'solid',
+            strokeLinecap: 'butt',
+            description: '',
+            ...config
+        });
+    }
+
     const outerRef = useRef();
     const svgRef = useRef();
 
@@ -562,7 +656,7 @@ export default function EditorCanvas({
                 ty: viewport.ty,
             };
             outerRef.current?.setPointerCapture(e.pointerId);
-        } else if (activeTool === 'select' && !isOverlayMode) {
+        } else if (activeTool === 'select' && !(pickerMode || eyedropperActive)) {
             // Start marquee from outside the SVG canvas
             const clickedInsideCanvas = svgRef.current?.contains(e.target);
             if (!clickedInsideCanvas) {
@@ -577,13 +671,17 @@ export default function EditorCanvas({
     }
 
     function handleOuterPointerMove(e) {
-        if (panningRef.current) {
-            const dx = e.clientX - panningRef.current.clientX;
-            const dy = e.clientY - panningRef.current.clientY;
+        const pan = panningRef.current;
+        if (pan) {
+            const dx = e.clientX - pan.clientX;
+            const dy = e.clientY - pan.clientY;
+            const startTx = pan.tx;
+            const startTy = pan.ty;
+            
             setViewport((v) => ({
                 ...v,
-                tx: panningRef.current.tx + dx,
-                ty: panningRef.current.ty + dy,
+                tx: startTx + dx,
+                ty: startTy + dy,
             }));
         } else if (marqueeStartRef.current && !isPanMode) {
             // Update marquee (handles both inside-canvas and outside-canvas drags)
@@ -634,7 +732,7 @@ export default function EditorCanvas({
         eyedropper: "var(--cursor-crosshair)",
     };
     const isPanMode = spaceHeld || ctrlHeld;
-    const isOverlayMode = pickerMode || eyedropperActive;
+    const isOverlayMode = pickerMode || eyedropperActive || inspectMode;
     const outerCursor = isOverlayMode
         ? "var(--cursor-crosshair)"
         : isPanMode
@@ -652,7 +750,7 @@ export default function EditorCanvas({
 
     // ── Marquee selection ─────────────────────────────────────────────────────
     function handleSvgPointerDown(e) {
-        if (isPanMode || isOverlayMode) return;
+        if (isPanMode || pickerMode || eyedropperActive) return;
 
         // Non-select tool: place a new element at click position
         if (activeTool !== 'select') {
@@ -693,7 +791,11 @@ export default function EditorCanvas({
             onPointerDown={handleOuterPointerDown}
             onPointerMove={handleOuterPointerMove}
             onPointerUp={handleOuterPointerUp}
+            onContextMenu={handleContextMenu}
         >
+            {isWorking && (
+               <div className="ai-working-border" style={{ position: 'absolute', inset: 0, zIndex: 100, pointerEvents: 'none' }} />
+            )}
             {/* Viewport-transformed canvas */}
             <div
                 style={{
@@ -711,6 +813,7 @@ export default function EditorCanvas({
                     backgroundColor: "#f8f8f8",
                 }}
             >
+
                 {/* Content SVG */}
                 <svg
                     ref={(el) => {
@@ -784,7 +887,7 @@ export default function EditorCanvas({
                                         : (e) => onElementPointerDown(e, el.id)
                             }
                             onDoubleClick={
-                                isOverlayMode ? undefined : () => handleDoubleClick(el.id)
+                                (pickerMode || eyedropperActive) ? undefined : () => handleDoubleClick(el.id)
                             }
                         >
                             <ElementRenderer el={el} />
@@ -866,6 +969,7 @@ export default function EditorCanvas({
                     {selectedEl && (
                         <SelectionHandles
                             el={{ ...selectedEl, ...elBounds(selectedEl) }}
+                            color="#0D65D9"
                             onHandlePointerDown={onElementPointerDown}
                         />
                     )}
@@ -942,18 +1046,22 @@ export default function EditorCanvas({
                                 )}
                                 <span style={{
                                     fontSize: 9, color: "#fff", fontFamily: "DM Mono, monospace",
-                                    background: "rgba(0,0,0,0.6)", padding: "1px 5px", borderRadius: 3,
+                                    background: "rgba(0,0,0,0.7)", padding: "2px 8px", borderRadius: 20,
+                                    display: "flex", alignItems: "center", lineHeight: "normal",
+                                    zIndex: 10,
                                 }}>
                                     {hoveredEl.id}
                                 </span>
                             </div>
                         ) : (
                             <div style={{
-                                position: "absolute", top: -22, left: 0,
+                                position: "absolute", top: -24, left: 0,
                                 background: pickColor, color: "#fff",
                                 fontSize: 10, fontFamily: "DM Mono, monospace", fontWeight: 600,
-                                padding: "2px 6px", borderRadius: 4, whiteSpace: "nowrap",
+                                padding: "2px 10px", borderRadius: 20, whiteSpace: "nowrap",
+                                display: "flex", alignItems: "center", lineHeight: "normal",
                                 pointerEvents: "none", boxShadow: "0 2px 8px rgba(0,0,0,0.4)",
+                                zIndex: 10,
                             }}>
                                 {hoveredEl.id} · {hoveredEl.type} · {Math.round(hoveredEl.width)}×{Math.round(hoveredEl.height)}
                             </div>
@@ -991,6 +1099,55 @@ export default function EditorCanvas({
                         onCommit={commitTextEdit}
                         onDismiss={() => setTextEditId(null)}
                     />
+                )}
+
+                {/* ── Context Menu Overlay ── */}
+                {contextMenu.visible && (
+                    <div style={{
+                        position: 'fixed', left: contextMenu.x, top: contextMenu.y, zIndex: 1000,
+                        background: 'rgba(23, 23, 23, 0.85)', backdropFilter: 'blur(12px)',
+                        border: '1px solid rgba(255, 255, 255, 0.08)', borderRadius: 10,
+                        padding: 8, boxShadow: '0 12px 32px rgba(0,0,0,0.5)',
+                        animation: 'cmIn 0.15s ease-out',
+                        width: 180,
+                    }}>
+                        <style>{`
+                            @keyframes cmIn { from { opacity: 0; transform: scale(0.95) translateY(-5px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+                        `}</style>
+                        <div style={{ 
+                            display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4,
+                        }}>
+                            {[
+                                { id: 'select',     label: 'Select',  icon: ICONS.select },
+                                { id: 'rect',       label: 'Rect',    icon: ICONS.rect },
+                                { id: 'circle',     label: 'Circle',  icon: ICONS.circle },
+                                { id: 'polygon',    label: 'Polygon', icon: ICONS.polygon },
+                                { id: 'star',       label: 'Star',    icon: ICONS.star },
+                                { id: 'text',       label: 'Text',    icon: ICONS.text },
+                                { id: 'image',      label: 'Image',   icon: ICONS.image },
+                                { id: 'line',       label: 'Line',    icon: ICONS.line },
+                                { id: 'arrow',      label: 'Arrow',   icon: ICONS.arrow },
+                                { id: 'eyedropper', label: 'Sample',  icon: ICONS.eyedropper },
+                            ].map(t => (
+                                <button
+                                    key={t.id}
+                                    onMouseDown={e => { e.stopPropagation(); handleAddFromMenu(t.id); }}
+                                    style={{
+                                        display: 'flex', alignItems: 'center', gap: 8,
+                                        padding: '6px 8px', borderRadius: 6, border: 'none',
+                                        background: 'transparent', cursor: 'pointer',
+                                        color: 'var(--text-secondary)', transition: 'all 0.1s',
+                                        fontSize: 11, textAlign: 'left',
+                                    }}
+                                    onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; e.currentTarget.style.color = 'var(--text-primary)'; }}
+                                    onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-secondary)'; }}
+                                >
+                                    <DuotoneIcon svg={t.icon} size={13} />
+                                    {t.label}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
                 )}
 
             </div>

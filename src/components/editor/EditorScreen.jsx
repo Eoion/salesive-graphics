@@ -20,6 +20,7 @@ import CollectionModal from './CollectionModal.jsx';
 import PasteSVGModal from './PasteSVGModal.jsx';
 import VariablesPanel from './VariablesPanel.jsx';
 import CodeEditor from './CodeEditor.jsx';
+import toast from 'react-hot-toast';
 
 // ─── Agent cursor overlay ─────────────────────────────────────────────────────
 function AgentCursorOverlay({ elementId, thought, phase, elements, canvasViewport }) {
@@ -172,6 +173,7 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
   const [snapEnabled,  setSnapEnabled]  = useState(false);
   const [zoomDisplay,  setZoomDisplay]  = useState(100);
   const [pickerMode,   setPickerMode]   = useState(false);
+  const [inspectMode,  setInspectMode]  = useState(false);
   const [canvasViewport, setCanvasViewport] = useState({ tx: 0, ty: 0, scale: 1 });
   const [panelWidth,   setPanelWidth]   = useState(300);
 
@@ -240,6 +242,14 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
       }
     }
   }, [defs.fonts]);
+  
+  // Auto-switch to properties tab when selecting an element if currently in AI tab
+  useEffect(() => {
+    if (selectedId && activeDock === 'ai') {
+      setActiveDock('properties');
+    }
+  }, [selectedId]);
+
 
   const { bindings, keymapName, matchAction, importKeymap, resetToDefault } = useKeymap();
 
@@ -374,12 +384,13 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
               const currentScale = Math.sqrt((imgEl.width / nw) * (imgEl.height / nh));
               const scales = [0.1, 0.125, 0.25, 0.33, 0.5, 0.67, 0.75, 1, 1.25, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10];
               const snapped = scales.reduce((a, b) => Math.abs(b - currentScale) < Math.abs(a - currentScale) ? b : a);
-              updateElement(selectedId, { width: Math.round(nw * snapped), height: Math.round(nh * snapped) });
+            updateElement(selectedId, { width: Math.round(nw * snapped), height: Math.round(nh * snapped) });
             };
             img.src = imgEl.href;
           }
           break;
         }
+        case 'inspect':      e.preventDefault(); setInspectMode(v => !v); break;
       }
     }
     window.addEventListener('keydown', onKey);
@@ -1702,6 +1713,48 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
   const agentRef = useEditorAgent({ getEditorContext: buildEditorContext, clientToolHandlers });
   const { agentCursor } = agentRef;
 
+  const lastToastRef = useRef(0);
+  const triggerWaitToast = () => {
+    const now = Date.now();
+    if (now - lastToastRef.current < 2000) return;
+    lastToastRef.current = now;
+    
+    toast.dismiss('ai-working-toast');
+    toast((t) => (
+      <div 
+        onClick={() => toast.dismiss(t.id)}
+        style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer' }}
+      >
+        <div style={{ 
+          color: 'var(--accent)', 
+          flexShrink: 0, 
+          display: 'flex', 
+          background: 'rgba(13,101,217,0.1)',
+          padding: 6,
+          borderRadius: 8
+        }}>
+          <DuotoneIcon svg={ICONS.ai} size={18} />
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+          <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>AI is working</span>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Click elements once AI finishes.</span>
+        </div>
+      </div>
+    ), {
+      id: 'ai-working-toast',
+      duration: 3000,
+      style: {
+        background: 'var(--bg-surface)',
+        color: 'var(--text-primary)',
+        border: '1px solid var(--border)',
+        borderRadius: '12px',
+        boxShadow: '0 8px 30px rgba(0,0,0,0.4)',
+        padding: '10px 14px',
+        minWidth: '220px'
+      },
+    });
+  };
+
   // ── Paste from clipboard ────────────────────────────────────────────────────
   useEffect(() => {
     async function onPaste(e) {
@@ -1810,6 +1863,7 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
         onSaveToCollection={handleSaveToCollection}
         onOpenCollection={() => setShowCollection(true)}
         onTextEdit={(id) => canvasCtrl.current.textEdit?.(id)}
+        addElement={addElement}
       />
 
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -1857,16 +1911,16 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
 
           {/* Element picker */}
           <button
-            onClick={() => setPickerMode(m => !m)}
+            onClick={() => setInspectMode(m => !m)}
             style={{
-              ...subBtn(pickerMode),
-              ...(pickerMode ? {
+              ...subBtn(inspectMode),
+              ...(inspectMode ? {
                 background: 'rgba(59,130,246,0.15)',
                 border: '1px solid rgba(59,130,246,0.5)',
                 color: '#60a5fa',
               } : {}),
             }}
-            title="Element picker — hover to inspect, click to select (Ctrl+Shift+C)"
+            title="Inspect Canvas — hover to see element info (Ctrl+I)"
           >
             <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
               <path d="M1 1l5.5 13 2-5 5-2L1 1z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" fill="none"/>
@@ -1938,6 +1992,7 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
         {/* Canvas wrapper — position:relative so overlays work */}
         <div style={{ flex: 1, position: 'relative', overflow: 'hidden', display: 'flex' }}>
           <EditorCanvas
+            isWorking={!agentRef.isAgentDone || agentRef.isThinking || agentRef.isStreaming}
             elements={elements}
             defs={defs}
             selectedId={selectedId}
@@ -1966,15 +2021,20 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
             onEyedrop={handleEyedrop}
             pickerMode={pickerMode}
             onPick={id => { setSelectedId(id); setPickerMode(false); setActiveTool('select'); }}
+            inspectMode={inspectMode}
+            addElement={addElement}
           />
 
           {/* Agent lock overlay — blocks user interaction while AI is working */}
           {!agentRef.isAgentDone && (
-            <div style={{
-              position: 'absolute', inset: 0, zIndex: 60,
-              cursor: 'not-allowed', pointerEvents: 'all',
-              background: 'rgba(0,0,0,0.03)',
-            }}>
+            <div 
+              onPointerDown={triggerWaitToast}
+              style={{
+                position: 'absolute', inset: 0, zIndex: 60,
+                cursor: 'not-allowed', pointerEvents: 'all',
+                background: 'rgba(0,0,0,0.03)',
+              }}
+            >
               <div style={{
                 position: 'absolute', bottom: 16, left: '50%', transform: 'translateX(-50%)',
                 display: 'flex', alignItems: 'center', gap: 8,

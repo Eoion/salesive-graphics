@@ -1,4 +1,5 @@
 import { polygonPoints, starPoints, arrowheadPoints } from './shapeHelpers.js';
+import { colorizeInlineSvgHref } from './svgIconHref.js';
 
 function esc(str) {
   return String(str)
@@ -104,7 +105,7 @@ function serializeOne(el) {
         x: el.x, y: el.y,
         width: Math.max(el.width, 1),
         height: Math.max(el.height, 1),
-        href: el.href || '',
+        href: colorizeInlineSvgHref(el.href, el.iconColors) || '',
         preserveAspectRatio: 'xMidYMid slice',
         opacity: el.opacity !== 1 ? el.opacity : undefined,
       })}${vis}${rot}${imgStyleAttr}${rawAttrStr} />`;

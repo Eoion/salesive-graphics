@@ -28,7 +28,7 @@ function handlePos(id, x, y, w, h) {
   }
 }
 
-export default function SelectionHandles({ el, onHandlePointerDown }) {
+export default function SelectionHandles({ el, color = "var(--accent)", onHandlePointerDown }) {
   if (!el) return null;
   const { x, y, width: w, height: h, rotation } = el;
   const cx = x + w / 2;
@@ -45,7 +45,7 @@ export default function SelectionHandles({ el, onHandlePointerDown }) {
         x={x - padding} y={y - padding}
         width={w + padding * 2} height={h + padding * 2}
         fill="none"
-        stroke="var(--accent)"
+        stroke={color}
         strokeWidth={1.5}
         strokeDasharray="4 3"
         vectorEffect="non-scaling-stroke"
@@ -55,7 +55,7 @@ export default function SelectionHandles({ el, onHandlePointerDown }) {
       <line
         x1={cx} y1={y}
         x2={rotateHandleCx} y2={rotateHandleCy}
-        stroke="var(--accent)" strokeWidth={1}
+        stroke={color} strokeWidth={1}
         strokeDasharray="3 2"
         vectorEffect="non-scaling-stroke"
       />
@@ -65,7 +65,7 @@ export default function SelectionHandles({ el, onHandlePointerDown }) {
         data-handle="rotate"
         cx={rotateHandleCx} cy={rotateHandleCy} r={5}
         fill="white"
-        stroke="var(--accent)"
+        stroke={color}
         strokeWidth={1.5}
         vectorEffect="non-scaling-stroke"
         style={{ cursor: 'var(--cursor-crosshair)', pointerEvents: 'all' }}
@@ -82,7 +82,7 @@ export default function SelectionHandles({ el, onHandlePointerDown }) {
             x={hx - HALF} y={hy - HALF}
             width={HANDLE_SIZE} height={HANDLE_SIZE}
             fill="white"
-            stroke="var(--accent)"
+            stroke={color}
             strokeWidth={1.5}
             vectorEffect="non-scaling-stroke"
             style={{ cursor: CURSORS[id], pointerEvents: 'all' }}

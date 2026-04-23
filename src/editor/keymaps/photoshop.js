@@ -19,6 +19,7 @@ export const PHOTOSHOP_KEYMAP = {
     polygon:        'P',
     star:           'S',
     arrow:          'A',
+    inspect:        'Ctrl+I',
   },
 };
 
@@ -43,4 +44,5 @@ export const ACTION_LABELS = {
   polygon:        'Polygon Tool',
   star:           'Star Tool',
   arrow:          'Arrow Tool',
+  inspect:        'Inspect Mode',
 };

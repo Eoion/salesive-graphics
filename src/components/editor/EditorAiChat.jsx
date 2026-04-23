@@ -214,23 +214,58 @@ function AiTable({ lines }) {
 function processInline(text) {
     if (typeof text !== "string") return text;
     const parts = [];
-    const re = /(!\[(.*?)\]\((.*?)\))|(\*\*(.*?)\*\*)|(`(.*?)`)/g;
+    const re = /(!\[(.*?)\]\((.*?)\))|(\[(.*?)\]\((.*?)\))|(\*\*(.*?)\*\*)|(\*(.*?)\*)|(`(.*?)`)/g;
     let last = 0,
         m;
     while ((m = re.exec(text)) !== null) {
         if (m.index > last) parts.push(text.slice(last, m.index));
+        
         if (m[1]) {
+            // Image ![alt](url)
             parts.push(<ImageBubble key={m.index} url={m[3]} />);
         } else if (m[4]) {
+            // Link [text](url)
+            parts.push(
+                <a
+                    key={m.index}
+                    href={m[6]}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                        color: "var(--accent)",
+                        textDecoration: "none",
+                        fontWeight: 600,
+                        borderBottom: "1px solid rgba(13,101,217,0.3)",
+                        transition: "border-color 0.15s",
+                    }}
+                    onMouseEnter={(e) => e.currentTarget.style.borderBottomColor = "var(--accent)"}
+                    onMouseLeave={(e) => e.currentTarget.style.borderBottomColor = "rgba(13,101,217,0.3)"}
+                >
+                    {m[5]}
+                </a>
+            );
+        } else if (m[7]) {
+            // Bold **text**
             parts.push(
                 <strong
                     key={m.index}
                     style={{ fontWeight: 600, color: "var(--text-primary)" }}
                 >
-                    {m[5]}
+                    {m[8]}
                 </strong>,
             );
-        } else if (m[6]) {
+        } else if (m[9]) {
+            // Italic *text*
+            parts.push(
+                <em
+                    key={m.index}
+                    style={{ fontStyle: "italic", color: "var(--text-muted)" }}
+                >
+                    {m[10]}
+                </em>
+            );
+        } else if (m[11]) {
+            // Inline code `text`
             parts.push(
                 <code
                     key={m.index}
@@ -241,9 +276,11 @@ function processInline(text) {
                         fontSize: "0.9em",
                         fontFamily: "DM Mono, monospace",
                         color: "#7dd3fc",
+                        wordBreak: "break-word",
+                        overflowWrap: "anywhere",
                     }}
                 >
-                    {m[7]}
+                    {m[12]}
                 </code>,
             );
         }
@@ -283,6 +320,7 @@ function AiMarkdown({ content, isStreaming }) {
                             border: "1px solid var(--border)",
                             whiteSpace: "pre-wrap",
                             wordBreak: "break-word",
+                            overflowWrap: "anywhere",
                             lineHeight: 1.5,
                         }}
                     >
@@ -381,7 +419,7 @@ function AiMarkdown({ content, isStreaming }) {
             result.push(<div key={key++} style={{ height: 5 }} />);
         } else {
             result.push(
-                <div key={key++} style={{ lineHeight: 1.55 }}>
+                <div key={key++} style={{ lineHeight: 1.55, wordBreak: "break-word", overflowWrap: "anywhere" }}>
                     {processInline(line)}
                 </div>,
             );
@@ -393,7 +431,12 @@ function AiMarkdown({ content, isStreaming }) {
     }
 
     return (
-        <div style={{ fontSize: 12.5, color: "var(--text-secondary)" }}>
+        <div style={{
+            fontSize: 12.5,
+            color: "var(--text-secondary)",
+            wordBreak: "break-word",
+            overflowWrap: "anywhere"
+        }}>
             {result}
             {isStreaming && <span className="ai-streaming-cursor" />}
         </div>
@@ -640,6 +683,7 @@ function ToolCallCard({ tool, status, result, error, isClientTool }) {
                                 overflow: "auto",
                                 whiteSpace: "pre-wrap",
                                 wordBreak: "break-word",
+                                overflowWrap: "anywhere",
                             }}
                         >
                             {resultStr.slice(0, 600)}

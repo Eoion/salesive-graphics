@@ -2,6 +2,8 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import DuotoneIcon from '../DuotoneIcon.jsx';
 import { ICONS } from '../../editor/duotoneIcons.js';
 import { loadCollection } from '../../lib/collection.js';
+import IconPickerPanel from './IconPickerPanel.jsx';
+import { freshId } from '../../editor/editorConstants.js';
 
 const TOOLS = [
   { id: 'select',     svg: ICONS.select,     label: 'Select',  key: 'V' },
@@ -26,9 +28,15 @@ const ALIGN_BTNS = [
 ];
 
 const TYPE_DOT = {
-  rect: '#0D65D9', circle: '#0D65D9', text: '#3b82f6',
-  image: '#c084fc', line: '#0D65D9',
-  polygon: '#10b981', star: '#f59e0b', arrow: '#0D65D9',
+  text: '#8B5CF6',
+  rect: '#0D65D9',
+  circle: '#EAB308',
+  line: '#64748b',
+  image: '#10B981',
+  polygon: '#EC4899',
+  star: '#F43F5E',
+  arrow: '#6366F1',
+  eyedropper: '#14B8A6',
   default: '#6b7280',
 };
 
@@ -84,6 +92,7 @@ export default function EditorToolbar({
   onDuplicate,
   onSaveToCollection, onOpenCollection,
   onTextEdit,
+  addElement,
 }) {
   const selectedEls = elements.filter(e => selectedIds.includes(e.id));
   const [dragOverId, setDragOverId] = useState(null);
@@ -109,6 +118,22 @@ export default function EditorToolbar({
 
   const hasVisible  = selectedEls.some(el => el.visible !== false);
   const hasUnlocked = selectedEls.some(el => !el.locked);
+
+  function handleAddIcon(dataUrl, _name, size, options = {}) {
+    const w = canvasSize?.width  || size?.width  || 800;
+    const h = canvasSize?.height || size?.height || 600;
+    addElement({
+      id: freshId('image'),
+      type: 'image',
+      x: w / 2 - 40, y: h / 2 - 40,
+      width: 80, height: 80,
+      href: dataUrl,
+      fill: options.fill, iconColors: options.iconColors,
+      stroke: 'none', strokeWidth: 0,
+      strokeDash: 'solid', strokeLinecap: 'butt',
+      opacity: 1, visible: true, locked: false, description: '',
+    });
+  }
 
   return (
     <aside style={{
@@ -141,7 +166,12 @@ export default function EditorToolbar({
                 onMouseEnter={e => { if (!active) e.currentTarget.style.background = 'var(--bg-hover)'; }}
                 onMouseLeave={e => { if (!active) e.currentTarget.style.background = 'transparent'; }}
               >
-                <DuotoneIcon svg={t.svg} size={13} />
+                <div style={{ 
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', 
+                    color: active ? 'var(--accent)' : 'var(--text-muted)' 
+                }}>
+                  <DuotoneIcon svg={t.svg} size={13} />
+                </div>
                 <span style={{ fontSize: 11, fontWeight: active ? 600 : 400, flex: 1, textAlign: 'left' }}>{t.label}</span>
                 <span style={{ fontSize: 9, color: 'var(--text-muted)', fontFamily: 'DM Mono, monospace' }}>{shortcut}</span>
               </button>
@@ -181,8 +211,8 @@ export default function EditorToolbar({
           </div>
           {/* Row 2: layer order + collection + text edit */}
           <div style={{ display: 'flex', gap: 3 }}>
-            <IconBtn icon={ICONS.layers} title="Bring forward" onClick={() => selectedEls.forEach(el => bringForward(el.id))} />
-            <IconBtn icon={ICONS.layers} title="Send backward" onClick={() => selectedEls.forEach(el => sendBackward(el.id))} />
+            <IconBtn icon={ICONS.bringForward} title="Bring forward" onClick={() => selectedEls.forEach(el => bringForward(el.id))} />
+            <IconBtn icon={ICONS.sendBackward} title="Send backward" onClick={() => selectedEls.forEach(el => sendBackward(el.id))} />
             {onSaveToCollection && (
               <IconBtn
                 icon={ICONS.bookmark}
@@ -268,7 +298,7 @@ export default function EditorToolbar({
                 cursor: 'pointer',
                 background: isSelected ? 'var(--accent-dim)' : 'transparent',
                 borderLeft: `2px solid ${isSelected ? 'var(--accent)' : 'transparent'}`,
-                borderTop: isDragOver ? '2px solid var(--accent)' : '2px solid transparent',
+                borderTop: isDragOver ? `2px solid ${dot}` : '2px solid transparent',
                 opacity: el.visible === false ? 0.4 : 1,
                 transition: 'background 0.1s, border-color 0.1s',
               }}
@@ -298,6 +328,8 @@ export default function EditorToolbar({
           </div>
         )}
       </div>
+
+      <IconPickerPanel onAddIcon={handleAddIcon} canvasSize={canvasSize} />
 
       {/* ── Undo / Redo footer ── */}
       <div style={{

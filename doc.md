@@ -139,7 +139,7 @@ Click the keymap name button in the sub-bar (shows "Photoshop") to open the keym
 | **Snap** | Toggle 8 px grid snapping |
 | **Paste SVG** | Open modal to paste SVG markup and import it onto the canvas |
 | **Variables** | Manage reusable CSS color / value variables |
-| **Inspect** | Hover to inspect elements (shows id, type, size); click to select. Also `Ctrl+Shift+C` |
+| **Inspect** | Hover to inspect elements (shows id, type, size); click to select. Also `Ctrl+I` |
 | **−** / **+** | Zoom out / in |
 | Zoom % input | Type a zoom percentage and press Enter |
 | **Fit** | Fit canvas to viewport (`0`) |
@@ -332,7 +332,7 @@ To start fresh: click **New Project** in the top bar.
 |-----|--------|
 | `K` | Eyedropper — click element to copy fill; `Shift`+click to copy stroke |
 | `Escape` | Cancel eyedropper / deselect |
-| `Ctrl+Shift+C` | Toggle Inspect mode (hover to inspect, click to select) |
+| `Ctrl+I` | Toggle Inspect mode (hover to inspect, click to select) |
 | `Ctrl+Shift+M` | Snap image to nearest clean natural scale (0.5×, 1×, 2×…) |
 
 ### Sub-bar Controls (Editor)

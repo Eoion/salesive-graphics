@@ -54,6 +54,7 @@ export function makeElement(type, canvasWidth = 800, canvasHeight = 600) {
         text: 'Text', fontSize: 24,
         fontWeight: 'normal', fontFamily: 'sans-serif',
         textAnchor: 'start',
+        isNewText: true,
       };
     case 'image':
       return { ...base, fill: '#cbd5e1', x: cx - 100, y: cy - 75, width: 200, height: 150, lockAspect: false };

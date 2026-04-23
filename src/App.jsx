@@ -13,7 +13,10 @@ import FieldMapper from './components/FieldMapper';
 import SchemaPreview from './components/SchemaPreview';
 import CanvasSizePicker from './components/editor/CanvasSizePicker.jsx';
 import EditorScreen from './components/editor/EditorScreen.jsx';
+import MobileOverlay from './components/MobileOverlay';
 import { clearStoredEditorAiSession } from './editor/useEditorAgent.js';
+import { uploadImageToStore } from './components/editor/EditorAiChat.jsx';
+import { Toaster } from 'react-hot-toast';
 import './index.css';
 
 const THEME_KEY = 'salesive_theme';
@@ -46,12 +49,21 @@ export default function App() {
   const [theme,        setTheme]        = useState(getInitialTheme);
   const [showPicker,   setShowPicker]   = useState(false);
   const [canvasSize,   setCanvasSize]   = useState(() => session.canvasSize || null);
+  const [uploadedElements, setUploadedElements] = useState(null);
+  const [pendingImageUploads, setPendingImageUploads] = useState([]);
   const [svgString,    setSvgString]    = useState(() => session.svgString || null);
   const [parsed,       setParsed]       = useState(() => session.svgString ? parseSVG(session.svgString) : null);
   const [selectedId,   setSelectedId]   = useState(null);
   const [mappings,     setMappings]     = useState(() => session.mappings || {});
   const [templateMeta, setTemplateMeta] = useState(() => session.templateMeta || { id: '', name: 'Untitled Template' });
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 1024);
   const didRunInitialRedirectRef = useRef(false);
+
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth < 1024);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   // ── Redirect based on session if route is root ─────────────────────────────────
   useEffect(() => {
@@ -98,12 +110,14 @@ export default function App() {
     localStorage.removeItem('salesive_editor_viewport');
     const { elements, canvasSize: cs } = parseSVGToElements(svgText);
     setCanvasSize(cs);
+    setUploadedElements(elements);
+    setPendingImageUploads([]);
     setTemplateMeta({
       id:   filename.replace(/\.svg$/, '').replace(/[^a-z0-9]/gi, '-'),
       name: filename.replace(/\.svg$/, ''),
     });
 
-    // Store elements into editor localStorage so EditorScreen picks them up
+    // Best-effort localStorage backup (may fail for large SVGs with embedded images)
     try {
       localStorage.setItem('salesive_editor', JSON.stringify(elements));
     } catch (error) {
@@ -111,9 +125,25 @@ export default function App() {
     }
 
     navigate('editor');
+
+    // Upload base64 images in the background; patch elements as each resolves
+    const base64Images = elements.filter(
+      el => el.type === 'image' && typeof el.href === 'string' && el.href.startsWith('data:')
+    );
+    for (const el of base64Images) {
+      const mime = el.href.match(/^data:([^;]+);/)?.[1] || 'image/png';
+      const ext = mime.split('/')[1]?.replace('jpeg', 'jpg') || 'png';
+      fetch(el.href)
+        .then(r => r.blob())
+        .then(blob => uploadImageToStore(blob, `${el.id || 'image'}.${ext}`))
+        .then(url => { if (url) setPendingImageUploads(prev => [...prev, { id: el.id, url }]); })
+        .catch(() => {});
+    }
   }
 
   function handleEditorFinish(svgText) {
+    setUploadedElements(null);
+    setPendingImageUploads([]);
     const result = parseSVG(svgText);
     setSvgString(svgText);
     setParsed(result);
@@ -149,6 +179,8 @@ export default function App() {
   function handleNewProject() {
     clearSession();
     clearStoredEditorAiSession();
+    setUploadedElements(null);
+    setPendingImageUploads([]);
     localStorage.removeItem('salesive_editor');
     localStorage.removeItem('salesive_editor_viewport');
     setSvgString(null);
@@ -164,6 +196,26 @@ export default function App() {
 
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg-base)' }}>
+      <Toaster 
+        position="top-right"
+        toastOptions={{
+          style: {
+            background: 'var(--bg-surface)',
+            color: 'var(--text-primary)',
+            border: '1px solid var(--border)',
+            fontSize: '13px',
+            fontFamily: 'Syne, sans-serif',
+            borderRadius: '10px',
+            padding: '10px 16px',
+            boxShadow: '0 8px 16px rgba(0,0,0,0.15)',
+            backdropFilter: 'blur(8px)',
+          },
+          success: { iconTheme: { primary: 'var(--green)', secondary: '#fff' } },
+          error: { iconTheme: { primary: 'var(--red)', secondary: '#fff' } },
+        }}
+      />
+      {isMobile && <MobileOverlay />}
+
       <TopBar
         mode={mode}
         templateName={templateMeta.name}
@@ -191,7 +243,7 @@ export default function App() {
 
       {/* Editor — used for both new canvas AND uploaded SVGs */}
       {mode === 'editor' && canvasSize && (
-        <EditorScreen canvasSize={canvasSize} onCanvasResize={setCanvasSize} onFinish={handleEditorFinish} />
+        <EditorScreen canvasSize={canvasSize} onCanvasResize={setCanvasSize} onFinish={handleEditorFinish} initialElements={uploadedElements} pendingImageUploads={pendingImageUploads} />
       )}
 
       {/* Mapping */}

@@ -55,17 +55,21 @@ const PRESETS = [
   '#0D65D9', '#78716c', '#ffffff', '#a1a1aa', '#000000',
 ];
 
-export default function ColorPicker({ value, onChange, onClose }) {
-  const hex = (value && value !== 'none') ? value : '#000000';
+function pickerStateFromHex(hex) {
   const [h, s, v] = hexToHsv(hex);
-  const [hue, setHue] = useState(h);
-  const [sat, setSat] = useState(s);
-  const [val, setVal] = useState(v);
-  const [hexInput, setHexInput] = useState(hex.toUpperCase());
+  return { hue: h, sat: s, val: v, hexInput: hex.toUpperCase() };
+}
+
+export default function ColorPicker({ value, onChange, onClose, swatches }) {
+  const hex = (value && value !== 'none') ? value : '#000000';
+  const displaySwatches = swatches && swatches.length > 0 ? swatches : PRESETS;
+  const [picker, setPicker] = useState(() => pickerStateFromHex(hex));
+  const [syncedHex, setSyncedHex] = useState(hex);
   const areaRef = useRef();
   const hueRef = useRef();
   const dragging = useRef(null);
   const containerRef = useRef();
+  const { hue, sat, val, hexInput } = picker;
 
   useEffect(() => {
     if (!onClose) return;
@@ -74,42 +78,42 @@ export default function ColorPicker({ value, onChange, onClose }) {
         onClose();
       }
     }
-    document.addEventListener('pointerdown', onDown, true);
-    return () => document.removeEventListener('pointerdown', onDown, true);
+    document.addEventListener('pointerdown', onDown);
+    return () => document.removeEventListener('pointerdown', onDown);
   }, [onClose]);
 
-  useEffect(() => {
-    const [nh, ns, nv] = hexToHsv(hex);
-    setHue(nh); setSat(ns); setVal(nv);
-    setHexInput(hex.toUpperCase());
-  }, [hex]);
-
-  function emit(h, s, v) {
-    onChange(hsvToHex(h, s, v));
+  if (syncedHex !== hex) {
+    setSyncedHex(hex);
+    setPicker(pickerStateFromHex(hex));
   }
 
+  const emit = useCallback((h, s, v) => {
+    onChange(hsvToHex(h, s, v));
+  }, [onChange]);
+
   const pickArea = useCallback((e) => {
+    if (!areaRef.current) return;
     const rect = areaRef.current.getBoundingClientRect();
     const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
     const y = Math.max(0, Math.min(e.clientY - rect.top, rect.height));
     const ns = x / rect.width;
     const nv = 1 - y / rect.height;
-    setSat(ns); setVal(nv);
+    setPicker(prev => ({ ...prev, sat: ns, val: nv, hexInput: hsvToHex(hue, ns, nv).toUpperCase() }));
     emit(hue, ns, nv);
-    setHexInput(hsvToHex(hue, ns, nv).toUpperCase());
-  }, [hue, onChange]);
+  }, [emit, hue]);
 
   const pickHue = useCallback((e) => {
+    if (!hueRef.current) return;
     const rect = hueRef.current.getBoundingClientRect();
-    const y = Math.max(0, Math.min(e.clientY - rect.top, rect.height));
-    const nh = (y / rect.height) * 360;
-    setHue(nh);
+    const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+    const nh = (x / rect.width) * 360;
+    setPicker(prev => ({ ...prev, hue: nh, hexInput: hsvToHex(nh, sat, val).toUpperCase() }));
     emit(nh, sat, val);
-    setHexInput(hsvToHex(nh, sat, val).toUpperCase());
-  }, [sat, val, onChange]);
+  }, [emit, sat, val]);
 
   useEffect(() => {
     function onMove(e) {
+      if (dragging.current) e.preventDefault();
       if (dragging.current === 'area') pickArea(e);
       else if (dragging.current === 'hue') pickHue(e);
     }
@@ -125,25 +129,32 @@ export default function ColorPicker({ value, onChange, onClose }) {
   function handleHexCommit() {
     const clean = hexInput.replace('#', '');
     if (/^[0-9a-fA-F]{6}$/.test(clean)) {
-      const [nh, ns, nv] = hexToHsv('#' + clean);
-      setHue(nh); setSat(ns); setVal(nv);
+      setPicker(pickerStateFromHex('#' + clean));
       onChange('#' + clean.toLowerCase());
     } else {
-      setHexInput(hsvToHex(hue, sat, val).toUpperCase());
+      setPicker(prev => ({ ...prev, hexInput: hsvToHex(hue, sat, val).toUpperCase() }));
     }
   }
 
   const currentHex = hsvToHex(hue, sat, val);
 
   return (
-    <div ref={containerRef} style={{
+    <div ref={containerRef} onPointerDown={e => e.stopPropagation()} style={{
       background: 'var(--bg-surface)', border: '1px solid var(--border)',
       borderRadius: 10, padding: 12, width: 210,
       boxShadow: '0 12px 40px rgba(0,0,0,0.5)',
     }}>
       {/* SV area */}
       <div ref={areaRef}
-        onPointerDown={e => { dragging.current = 'area'; pickArea(e); }}
+        onPointerDown={e => {
+          e.preventDefault();
+          e.stopPropagation();
+          dragging.current = 'area';
+          try { e.currentTarget.setPointerCapture(e.pointerId); } catch {
+            // Pointer capture can fail in older embedded browser contexts.
+          }
+          pickArea(e);
+        }}
         style={{
           width: '100%', height: 150, borderRadius: 6, cursor: 'crosshair',
           position: 'relative',
@@ -167,7 +178,15 @@ export default function ColorPicker({ value, onChange, onClose }) {
 
       {/* Hue slider */}
       <div ref={hueRef}
-        onPointerDown={e => { dragging.current = 'hue'; pickHue(e); }}
+        onPointerDown={e => {
+          e.preventDefault();
+          e.stopPropagation();
+          dragging.current = 'hue';
+          try { e.currentTarget.setPointerCapture(e.pointerId); } catch {
+            // Pointer capture can fail in older embedded browser contexts.
+          }
+          pickHue(e);
+        }}
         style={{
           width: '100%', height: 12, borderRadius: 6, marginTop: 8, cursor: 'crosshair',
           background: 'linear-gradient(to right, #f00 0%, #ff0 17%, #0f0 33%, #0ff 50%, #00f 67%, #f0f 83%, #f00 100%)',
@@ -193,7 +212,7 @@ export default function ColorPicker({ value, onChange, onClose }) {
         }} />
         <input
           value={hexInput}
-          onChange={e => setHexInput(e.target.value)}
+          onChange={e => setPicker(prev => ({ ...prev, hexInput: e.target.value }))}
           onKeyDown={e => { if (e.key === 'Enter') handleHexCommit(); }}
           onBlur={handleHexCommit}
           style={{
@@ -205,13 +224,10 @@ export default function ColorPicker({ value, onChange, onClose }) {
         />
       </div>
 
-      {/* Presets */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 10 }}>
-        {PRESETS.map(c => (
-          <button key={c} onClick={() => {
-            const [nh, ns, nv] = hexToHsv(c);
-            setHue(nh); setSat(ns); setVal(nv);
-            setHexInput(c.toUpperCase());
+        {displaySwatches.map((c, i) => (
+          <button key={`${c}-${i}`} onClick={() => {
+            setPicker(pickerStateFromHex(c));
             onChange(c);
           }} style={{
             width: 20, height: 20, borderRadius: 4,
