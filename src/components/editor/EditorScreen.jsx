@@ -1823,6 +1823,13 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
     return () => window.removeEventListener('paste', onPaste);
   }, [handlePasteSVG, addElement, canvasSize, elements]);
 
+  // Disable browser right-click
+  useEffect(() => {
+    const handleCtx = e => e.preventDefault();
+    document.addEventListener('contextmenu', handleCtx);
+    return () => document.removeEventListener('contextmenu', handleCtx);
+  }, []);
+
   // ── Sub-bar button style ──────────────────────────────────────────────────
   const subBtn = (active = false) => ({
     padding: '4px 8px', borderRadius: 6,
@@ -2022,7 +2029,6 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
             pickerMode={pickerMode}
             onPick={id => { setSelectedId(id); setPickerMode(false); setActiveTool('select'); }}
             inspectMode={inspectMode}
-            addElement={addElement}
           />
 
           {/* Agent lock overlay — blocks user interaction while AI is working */}

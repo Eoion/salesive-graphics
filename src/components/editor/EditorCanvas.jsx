@@ -1,10 +1,7 @@
 import { useRef, useEffect, useLayoutEffect, useState, useMemo } from "react";
 import SelectionHandles from "./SelectionHandles.jsx";
-import DuotoneIcon from "../DuotoneIcon.jsx";
-import { ICONS } from "../../editor/duotoneIcons.js";
 import { polygonPoints, starPoints, arrowheadPoints } from "../../editor/shapeHelpers.js";
 import { colorizeInlineSvgHref } from "../../editor/svgIconHref.js";
-import { freshId } from "../../editor/editorConstants.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -395,61 +392,7 @@ export default function EditorCanvas({
     agentHighlightId,
     isWorking = false,
     inspectMode = false,
-    addElement,
 }) {
-    const [contextMenu, setContextMenu] = useState({ x: 0, y: 0, visible: false });
-
-    // Close menu on click outside
-    useEffect(() => {
-        if (!contextMenu.visible) return;
-        const hide = () => setContextMenu({ x: 0, y: 0, visible: false });
-        window.addEventListener("mousedown", hide);
-        return () => window.removeEventListener("mousedown", hide);
-    }, [contextMenu.visible]);
-
-    function handleContextMenu(e) {
-        e.preventDefault();
-        setContextMenu({ x: e.clientX, y: e.clientY, visible: true });
-    }
-
-    function handleAddFromMenu(toolId) {
-        const { x, y } = clientToCanvas(contextMenu.x, contextMenu.y);
-        setContextMenu({ x: 0, y: 0, visible: false });
-
-        if (toolId === 'select') return;
-        if (toolId === 'eyedropper') return;
-
-        // Default dimensions and styles for new elements
-        const defaults = {
-            rect: { width: 100, height: 100, fill: "#0D65D9" },
-            circle: { width: 100, height: 100, fill: "#EAB308" },
-            text: { width: 150, height: 40, text: "New Text", fontSize: 24, fill: "#000000" },
-            polygon: { width: 100, height: 100, fill: "#EC4899", sides: 6 },
-            star: { width: 100, height: 100, fill: "#F43F5E", spikes: 5, innerRadius: 0.5 },
-            line: { width: 200, height: 0, stroke: "#64748B", strokeWidth: 2 },
-            arrow: { width: 200, height: 0, stroke: "#6366F1", strokeWidth: 2 }
-        };
-
-        const config = defaults[toolId];
-        if (!config) return;
-
-        addElement({
-            type: toolId,
-            id: freshId(toolId),
-            x: Math.round(x - (config.width / 2)),
-            y: Math.round(y - (config.height / 2)),
-            opacity: 1,
-            visible: true,
-            locked: false,
-            stroke: config.stroke || 'none',
-            strokeWidth: config.strokeWidth ?? 0,
-            strokeDash: 'solid',
-            strokeLinecap: 'butt',
-            description: '',
-            ...config
-        });
-    }
-
     const outerRef = useRef();
     const svgRef = useRef();
 
@@ -791,7 +734,6 @@ export default function EditorCanvas({
             onPointerDown={handleOuterPointerDown}
             onPointerMove={handleOuterPointerMove}
             onPointerUp={handleOuterPointerUp}
-            onContextMenu={handleContextMenu}
         >
             {isWorking && (
                <div className="ai-working-border" style={{ position: 'absolute', inset: 0, zIndex: 100, pointerEvents: 'none' }} />
@@ -1099,55 +1041,6 @@ export default function EditorCanvas({
                         onCommit={commitTextEdit}
                         onDismiss={() => setTextEditId(null)}
                     />
-                )}
-
-                {/* ── Context Menu Overlay ── */}
-                {contextMenu.visible && (
-                    <div style={{
-                        position: 'fixed', left: contextMenu.x, top: contextMenu.y, zIndex: 1000,
-                        background: 'rgba(23, 23, 23, 0.85)', backdropFilter: 'blur(12px)',
-                        border: '1px solid rgba(255, 255, 255, 0.08)', borderRadius: 10,
-                        padding: 8, boxShadow: '0 12px 32px rgba(0,0,0,0.5)',
-                        animation: 'cmIn 0.15s ease-out',
-                        width: 180,
-                    }}>
-                        <style>{`
-                            @keyframes cmIn { from { opacity: 0; transform: scale(0.95) translateY(-5px); } to { opacity: 1; transform: scale(1) translateY(0); } }
-                        `}</style>
-                        <div style={{ 
-                            display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4,
-                        }}>
-                            {[
-                                { id: 'select',     label: 'Select',  icon: ICONS.select },
-                                { id: 'rect',       label: 'Rect',    icon: ICONS.rect },
-                                { id: 'circle',     label: 'Circle',  icon: ICONS.circle },
-                                { id: 'polygon',    label: 'Polygon', icon: ICONS.polygon },
-                                { id: 'star',       label: 'Star',    icon: ICONS.star },
-                                { id: 'text',       label: 'Text',    icon: ICONS.text },
-                                { id: 'image',      label: 'Image',   icon: ICONS.image },
-                                { id: 'line',       label: 'Line',    icon: ICONS.line },
-                                { id: 'arrow',      label: 'Arrow',   icon: ICONS.arrow },
-                                { id: 'eyedropper', label: 'Sample',  icon: ICONS.eyedropper },
-                            ].map(t => (
-                                <button
-                                    key={t.id}
-                                    onMouseDown={e => { e.stopPropagation(); handleAddFromMenu(t.id); }}
-                                    style={{
-                                        display: 'flex', alignItems: 'center', gap: 8,
-                                        padding: '6px 8px', borderRadius: 6, border: 'none',
-                                        background: 'transparent', cursor: 'pointer',
-                                        color: 'var(--text-secondary)', transition: 'all 0.1s',
-                                        fontSize: 11, textAlign: 'left',
-                                    }}
-                                    onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; e.currentTarget.style.color = 'var(--text-primary)'; }}
-                                    onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-secondary)'; }}
-                                >
-                                    <DuotoneIcon svg={t.icon} size={13} />
-                                    {t.label}
-                                </button>
-                            ))}
-                        </div>
-                    </div>
                 )}
 
             </div>
