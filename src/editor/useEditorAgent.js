@@ -116,6 +116,7 @@ export function useEditorAgent({ getEditorContext, clientToolHandlers = {} } = {
   const getEditorContextRef = useRef(getEditorContext);
   const clientToolHandlersRef = useRef(clientToolHandlers);
   const idleTimerRef = useRef(null);
+  const stoppedRef = useRef(false);
 
   useEffect(() => { getEditorContextRef.current = getEditorContext; }, [getEditorContext]);
   useEffect(() => { clientToolHandlersRef.current = clientToolHandlers; }, [clientToolHandlers]);
@@ -177,6 +178,7 @@ export function useEditorAgent({ getEditorContext, clientToolHandlers = {} } = {
     });
 
     socket.on('agent:thinking', () => {
+      if (stoppedRef.current) return;
       resetIdleTimer();
       setIsThinking(true);
       setIsAgentDone(false);
@@ -184,6 +186,7 @@ export function useEditorAgent({ getEditorContext, clientToolHandlers = {} } = {
     });
 
     socket.on('agent:token', (token) => {
+      if (stoppedRef.current) return;
       const content = typeof token === 'string' ? token : token?.content || token?.token || '';
       if (!content) return;
       resetIdleTimer();
@@ -201,6 +204,7 @@ export function useEditorAgent({ getEditorContext, clientToolHandlers = {} } = {
     socket.on('agent:response', (payload) => {
       const content = typeof payload === 'string' ? payload : payload?.content || '';
       const convId = typeof payload === 'object' ? payload?.conversationId : null;
+      stoppedRef.current = false;
       clearIdleTimer();
       setIsStreaming(false); setIsAgentDone(true); setIsThinking(false); setError(null);
       if (convId) { setConversationId(convId); try { localStorage.setItem(EDITOR_AI_CONVERSATION_KEY, convId); } catch {} }
@@ -215,6 +219,7 @@ export function useEditorAgent({ getEditorContext, clientToolHandlers = {} } = {
     });
 
     socket.on('agent:done', () => {
+      stoppedRef.current = false;
       clearIdleTimer();
       setIsStreaming(false); setIsAgentDone(true); setIsThinking(false);
       setAgentCursor({ visible: false, elementId: null, thought: null, phase: 'idle' });
@@ -222,6 +227,7 @@ export function useEditorAgent({ getEditorContext, clientToolHandlers = {} } = {
     });
 
     socket.on('agent:error', (e) => {
+      stoppedRef.current = false;
       clearIdleTimer();
       const msg = e?.message || e || 'The AI request failed.';
       setError(msg); setIsStreaming(false); setIsAgentDone(true); setIsThinking(false);
@@ -230,6 +236,7 @@ export function useEditorAgent({ getEditorContext, clientToolHandlers = {} } = {
     });
 
     socket.on('agent:tool_call', ({ tool, input, args, toolCallId }) => {
+      if (stoppedRef.current) return;
       resetIdleTimer();
       setIsStreaming(false); setIsAgentDone(false); setIsThinking(false); setError(null);
       const elementId = args?.id || args?.elementId || args?.element_id || null;
@@ -255,6 +262,7 @@ export function useEditorAgent({ getEditorContext, clientToolHandlers = {} } = {
     });
 
     socket.on('tool:execute', async ({ tool, args, toolCallId }) => {
+      if (stoppedRef.current) return;
       const tcId = toolCallId || makeId('call');
       resetIdleTimer();
       setIsAgentDone(false); setError(null);
@@ -314,6 +322,7 @@ export function useEditorAgent({ getEditorContext, clientToolHandlers = {} } = {
     if (!isConfigured) return false;
     try {
       const socket = await ensureConnected();
+      stoppedRef.current = false;
       setError(null);
       setIsAgentDone(false);
       setIsThinking(true);
@@ -346,6 +355,7 @@ export function useEditorAgent({ getEditorContext, clientToolHandlers = {} } = {
   }, []);
 
   const stop = useCallback(() => {
+    stoppedRef.current = true;
     if (socketRef.current?.connected) socketRef.current.emit('agent:stop', {});
     clearIdleTimer();
     setIsStreaming(false); setIsAgentDone(true); setIsThinking(false);

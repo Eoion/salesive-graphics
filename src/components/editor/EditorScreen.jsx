@@ -243,21 +243,28 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
     }
   }, [defs.fonts]);
   
-  // Auto-switch to properties tab when selecting an element if currently in AI tab
+  // Auto-switch to properties tab when user manually selects an element
+  const userSelectingRef = useRef(false);
   useEffect(() => {
-    if (selectedId && activeDock === 'ai') {
+    if (userSelectingRef.current && selectedId && activeDock === 'ai') {
       setActiveDock('properties');
     }
+    userSelectingRef.current = false;
   }, [selectedId]);
 
 
   const { bindings, keymapName, matchAction, importKeymap, resetToDefault } = useKeymap();
 
+  const markUserSelect = useCallback((fn) => (...args) => { userSelectingRef.current = true; return fn(...args); }, []);
+
   const { onElementPointerDown, onPointerMove, onPointerUp, onCanvasPointerDown } =
     useEditorInteractions({
       elements,
       selectedId, selectedIds,
-      setSelectedId, setPrimarySelectedId, setSelectedIds, toggleSelectedId,
+      setSelectedId: markUserSelect(setSelectedId),
+      setPrimarySelectedId: markUserSelect(setPrimarySelectedId),
+      setSelectedIds: markUserSelect(setSelectedIds),
+      toggleSelectedId: markUserSelect(toggleSelectedId),
       updateElementLive, updateElementsLive,
       commitCurrent, snapshotBeforeLive,
       deleteElement, deleteElements, activeTool, addElement,
@@ -1714,46 +1721,17 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
   const { agentCursor } = agentRef;
 
   const lastToastRef = useRef(0);
-  const triggerWaitToast = () => {
+  const handleOverlayClick = useCallback(() => {
     const now = Date.now();
-    if (now - lastToastRef.current < 2000) return;
+    if (now - lastToastRef.current < 3000) return;
     lastToastRef.current = now;
-    
-    toast.dismiss('ai-working-toast');
-    toast((t) => (
-      <div 
-        onClick={() => toast.dismiss(t.id)}
-        style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer' }}
-      >
-        <div style={{ 
-          color: 'var(--accent)', 
-          flexShrink: 0, 
-          display: 'flex', 
-          background: 'rgba(13,101,217,0.1)',
-          padding: 6,
-          borderRadius: 8
-        }}>
-          <DuotoneIcon svg={ICONS.ai} size={18} />
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-          <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>AI is working</span>
-          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Click elements once AI finishes.</span>
-        </div>
-      </div>
-    ), {
+    toast('AI is working — please wait for it to finish.', {
       id: 'ai-working-toast',
       duration: 3000,
-      style: {
-        background: 'var(--bg-surface)',
-        color: 'var(--text-primary)',
-        border: '1px solid var(--border)',
-        borderRadius: '12px',
-        boxShadow: '0 8px 30px rgba(0,0,0,0.4)',
-        padding: '10px 14px',
-        minWidth: '220px'
-      },
+      position: 'bottom-center',
+      icon: <DuotoneIcon svg={ICONS.ai} size={18} />,
     });
-  };
+  }, []);
 
   // ── Paste from clipboard ────────────────────────────────────────────────────
   useEffect(() => {
@@ -1981,7 +1959,7 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
 
           <button onClick={handleDownload} style={subBtn()} title="Download SVG">
             <DuotoneIcon svg={ICONS.download} size={12} />
-            Save SVG
+            Save
           </button>
 
           <button onClick={handleFinish} style={{
@@ -2033,29 +2011,28 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
 
           {/* Agent lock overlay — blocks user interaction while AI is working */}
           {!agentRef.isAgentDone && (
-            <div 
-              onPointerDown={triggerWaitToast}
+            <div
+              onClick={handleOverlayClick}
               style={{
                 position: 'absolute', inset: 0, zIndex: 60,
                 cursor: 'not-allowed', pointerEvents: 'all',
-                background: 'rgba(0,0,0,0.03)',
+                background: 'rgba(0,0,0,0.02)',
               }}
             >
               <div style={{
                 position: 'absolute', bottom: 16, left: '50%', transform: 'translateX(-50%)',
                 display: 'flex', alignItems: 'center', gap: 8,
-                padding: '6px 14px', borderRadius: 20,
-                background: 'rgba(13,101,217,0.12)', backdropFilter: 'blur(8px)',
-                border: '1px solid rgba(13,101,217,0.25)',
-                fontSize: 11, color: 'var(--accent)', fontFamily: 'Syne, sans-serif', fontWeight: 600,
-                pointerEvents: 'none', whiteSpace: 'nowrap',
-                animation: 'aiFadeUp 0.2s ease-out',
+                padding: '10px 16px', borderRadius: 12,
+                background: 'var(--bg-surface)', border: '1px solid var(--border)',
+                boxShadow: '0 8px 24px rgba(0,0,0,0.2)',
+                color: 'var(--text-primary)', fontSize: 12, fontWeight: 700,
+                fontFamily: 'Syne, sans-serif',
+                backdropFilter: 'blur(10px)',
               }}>
-                <span style={{ display: 'flex', gap: 3 }}>
-                  {[0,1,2].map(i => (
-                    <span key={i} style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--accent)', display: 'inline-block', animation: `aiPulse 1.2s ease-in-out ${i * 0.18}s infinite` }} />
-                  ))}
-                </span>
+                <span className="ai-spin" style={{
+                  width: 14, height: 14, borderRadius: '50%',
+                  border: '2px solid var(--accent-dim)', borderTopColor: 'var(--accent)'
+                }} />
                 AI is working…
               </div>
             </div>
