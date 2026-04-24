@@ -7,6 +7,7 @@ import { useEditorInteractions } from '../../editor/useEditorInteractions.js';
 import { useKeymap } from '../../editor/useKeymap.js';
 import { useEditorDefs } from '../../editor/useEditorDefs.js';
 import { useEditorAgent } from '../../editor/useEditorAgent.js';
+import { useAiAnimations } from '../../editor/useAiAnimations.js';
 import { serializeElements } from '../../editor/serializeElements.js';
 import { parseSVGToElements } from '../../editor/parseSVGToElements.js';
 import { addToCollection } from '../../lib/collection.js';
@@ -212,6 +213,8 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
     addVariable, updateVariable, removeVariable,
     addKeyframe,
     addFont, removeFont, setDefsFromImport } = useEditorDefs();
+
+  const { animOverrides, scheduleFlip, scheduleFadeIn, scheduleFlipBatch } = useAiAnimations();
 
   // Inject / remove loaded fonts in the document head whenever the font list changes
   useEffect(() => {
@@ -581,6 +584,11 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
   }, [insertElementsAtCenter]);
 
   const clientToolHandlers = useMemo(() => {
+    function addElementsAnimated(els) {
+      addElements(els);
+      for (const el of els) scheduleFadeIn(el.id);
+    }
+
     // Render canvas to PNG, upload, and return URL
     async function screenshotAndUpload() {
       const result = await captureCanvasScreenshot({ format: 'png', maxDimension: 1024 });
@@ -631,21 +639,44 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
 
       // ── Update ────────────────────────────────────────────────────────────
       update_element: async ({ id, ...patch } = {}) => {
-        if (!elements.some(e => e.id === id)) throw new Error(`Element "${id}" not found`);
+        const oldEl = elements.find(e => e.id === id);
+        if (!oldEl) throw new Error(`Element "${id}" not found`);
+        const hasGeom = ['x','y','width','height'].some(k => k in patch);
         updateElement(id, patch);
+        if (hasGeom) scheduleFlip(id, oldEl, { ...oldEl, ...patch });
         return { id, updated: Object.keys(patch) };
       },
       update_elements: async ({ ids = [], patch = {} } = {}) => {
         const valid = ids.filter(id => elements.some(e => e.id === id));
-        if (valid.length) updateElements(valid, patch);
+        if (!valid.length) return { updatedIds: [], count: 0 };
+        const hasGeom = ['x','y','width','height'].some(k => k in patch);
+        const flipEntries = [];
+        for (const id of valid) {
+          const oldEl = elements.find(e => e.id === id);
+          updateElement(id, patch);
+          if (hasGeom && oldEl) flipEntries.push({ id, oldEl, newEl: { ...oldEl, ...patch } });
+        }
+        if (flipEntries.length) scheduleFlipBatch(flipEntries);
         return { updatedIds: valid, count: valid.length };
       },
       set_fill: async ({ id, fill } = {}) => { updateElement(id, { fill }); return { id, fill }; },
       set_stroke: async ({ id, stroke, strokeWidth } = {}) => { updateElement(id, { stroke, ...(strokeWidth != null ? { strokeWidth } : {}) }); return { id, stroke }; },
       set_opacity: async ({ id, opacity } = {}) => { updateElement(id, { opacity }); return { id, opacity }; },
       set_text: async ({ id, text } = {}) => { updateElement(id, { text }); return { id, text }; },
-      move_element: async ({ id, x, y } = {}) => { updateElement(id, { x, y }); return { id, x, y }; },
-      resize_element: async ({ id, width, height } = {}) => { updateElement(id, { width, height }); return { id, width, height }; },
+      move_element: async ({ id, x, y } = {}) => {
+        const oldEl = elements.find(e => e.id === id);
+        if (!oldEl) throw new Error(`Element "${id}" not found`);
+        updateElement(id, { x, y });
+        scheduleFlip(id, oldEl, { ...oldEl, x, y });
+        return { id, x, y };
+      },
+      resize_element: async ({ id, width, height } = {}) => {
+        const oldEl = elements.find(e => e.id === id);
+        if (!oldEl) throw new Error(`Element "${id}" not found`);
+        updateElement(id, { width, height });
+        scheduleFlip(id, oldEl, { ...oldEl, width, height });
+        return { id, width, height };
+      },
       lock_element: async ({ id, locked = true } = {}) => { updateElement(id, { locked }); return { id, locked }; },
       unlock_element: async ({ id } = {}) => { updateElement(id, { locked: false }); return { id, locked: false }; },
 
@@ -672,6 +703,7 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
         syncCounter(elements);
         const id = freshId(type || 'rect');
         addElement({ type: type || 'rect', id, x: safe.x ?? canvasSize.width / 2 - 50, y: safe.y ?? canvasSize.height / 2 - 50, width: safe.width ?? 100, height: safe.height ?? 100, fill: safe.fill || '#0d65d9', stroke: 'none', strokeWidth: 0, opacity: 1, ...safe });
+        scheduleFadeIn(id);
         return { id };
       },
       add_elements: async ({ elements: els = [], selectNew = true } = {}) => {
@@ -705,6 +737,7 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
         const skipped = els.length - clean.length;
         const prepared = prepareImportedElements(normalized, 'original');
         const ids = addPreparedElements(prepared, { selectNew });
+        for (const id of ids) scheduleFadeIn(id);
         return { addedIds: ids, count: ids.length, ...(skipped > 0 ? { skippedNaN: skipped } : {}) };
       },
       duplicate_element: async ({ id } = {}) => {
@@ -713,6 +746,7 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
         syncCounter(elements);
         const newId = freshId(src.type);
         addElement({ ...structuredClone(src), id: newId, x: src.x + 10, y: src.y + 10 });
+        scheduleFadeIn(newId);
         return { originalId: id, newId };
       },
 
@@ -753,6 +787,7 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
         const targets = elements.filter(e => ids.includes(e.id));
         if (!targets.length) return { aligned: 0, message: 'No matching element IDs' };
         const updates = [];
+        const flipEntries = [];
         for (const el of targets) {
           const w = el.width || 0;
           const h = el.height || 0;
@@ -765,8 +800,10 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
           else if (align === 'center-v') patch = { y: Math.round((H - h) / 2) };
           else if (align === 'center') patch = { x: Math.round((W - w) / 2), y: Math.round((H - h) / 2) };
           updateElement(el.id, patch);
+          flipEntries.push({ id: el.id, oldEl: el, newEl: { ...el, ...patch } });
           updates.push({ id: el.id, ...patch });
         }
+        scheduleFlipBatch(flipEntries);
         return { aligned: updates.length, align, updates };
       },
 
@@ -778,25 +815,32 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
           .sort((a, b) => axis === 'vertical' ? a.y - b.y : a.x - b.x);
         if (targets.length < 2) return { distributed: 0, message: 'Need at least 2 elements' };
         const updates = [];
+        const flipEntries = [];
         if (axis === 'vertical') {
           const totalH = targets.reduce((s, e) => s + (e.height || 0), 0);
           const gap = spacing !== null ? spacing : Math.max(0, (H - margin * 2 - totalH) / (targets.length - 1));
           let y = margin;
           for (const el of targets) {
-            updateElement(el.id, { y: Math.round(y) });
-            updates.push({ id: el.id, y: Math.round(y) });
+            const patch = { y: Math.round(y) };
+            updateElement(el.id, patch);
+            flipEntries.push({ id: el.id, oldEl: el, newEl: { ...el, ...patch } });
+            updates.push({ id: el.id, ...patch });
             y += (el.height || 0) + gap;
           }
+          scheduleFlipBatch(flipEntries);
           return { distributed: targets.length, axis, gap: Math.round(gap), updates };
         } else {
           const totalW = targets.reduce((s, e) => s + (e.width || 0), 0);
           const gap = spacing !== null ? spacing : Math.max(0, (W - margin * 2 - totalW) / (targets.length - 1));
           let x = margin;
           for (const el of targets) {
-            updateElement(el.id, { x: Math.round(x) });
-            updates.push({ id: el.id, x: Math.round(x) });
+            const patch = { x: Math.round(x) };
+            updateElement(el.id, patch);
+            flipEntries.push({ id: el.id, oldEl: el, newEl: { ...el, ...patch } });
+            updates.push({ id: el.id, ...patch });
             x += (el.width || 0) + gap;
           }
+          scheduleFlipBatch(flipEntries);
           return { distributed: targets.length, axis, gap: Math.round(gap), updates };
         }
       },
@@ -900,7 +944,7 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
         const textAnchorX = x + width / 2;
         // Vertical centering: SVG baseline = el.y + fontSize; we want center = rect center
         const textY = y + (height / 2) - (fontSize / 2);
-        addElements([
+        addElementsAnimated([
           { type: 'rect', id: rectId, x, y, width, height, fill, stroke, strokeWidth: strokeWidth || 0, rx: rx || 0, ry: rx || 0, opacity, visible: true, locked: false, description: '', strokeDash: 'solid', strokeLinecap: 'butt' },
           { type: 'text', id: textId, x: textAnchorX, y: textY, width: textW, height: fontSize * 1.4, text: label, fontSize, fontWeight, fontFamily, textAnchor: 'middle', fill: fontColor, stroke: 'none', strokeWidth: 0, opacity, visible: true, locked: false, description: '', strokeDash: 'solid', strokeLinecap: 'butt' },
         ]);
@@ -924,7 +968,7 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
         const height = hOpt ?? autoH;
         const textAnchorX = x + width / 2;
         const textY = y + (height / 2) - (fontSize / 2);
-        addElements([
+        addElementsAnimated([
           { type: 'rect', id: rectId, x, y, width, height, fill, stroke, strokeWidth: strokeWidth || 0, rx, ry: rx, opacity: 1, visible: true, locked: false, description: '', strokeDash: 'solid', strokeLinecap: 'butt' },
           { type: 'text', id: textId, x: textAnchorX, y: textY, width: Math.max(label.length * fontSize * 0.6, 80), height: fontSize * 1.4, text: label, fontSize, fontWeight, fontFamily, textAnchor: 'middle', fill: fontColor, stroke: 'none', strokeWidth: 0, opacity: 1, visible: true, locked: false, description: '', strokeDash: 'solid', strokeLinecap: 'butt' },
         ]);
@@ -1115,7 +1159,7 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
         const height = fontSize + paddingY * 2;
         const rx = rxOpt ?? height / 2;
         const textY = y + (height / 2) - (fontSize / 2);
-        addElements([
+        addElementsAnimated([
           { type: 'rect', id: rectId, x, y, width, height, fill, stroke, strokeWidth: strokeWidth || 0, rx, ry: rx, opacity: 1, visible: true, locked: false, description: '', strokeDash: 'solid', strokeLinecap: 'butt' },
           { type: 'text', id: textId, x: x + width / 2, y: textY, width: Math.max(label.length * fontSize * 0.6, 30), height: fontSize * 1.4, text: label, fontSize, fontWeight, fontFamily, textAnchor: 'middle', fill: fontColor, stroke: 'none', strokeWidth: 0, opacity: 1, visible: true, locked: false, description: '', strokeDash: 'solid', strokeLinecap: 'butt' },
         ]);
@@ -1148,7 +1192,7 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
           ids.push(bodyId);
           elems.push({ type: 'text', id: bodyId, x: x + padding, y: titleY + titleH + gap, width: width - padding * 2, height: bodyH, text: body, fontSize: bodyFontSize, fontWeight: 'normal', fontFamily: 'sans-serif', textAnchor: 'start', fill: bodyColor, stroke: 'none', strokeWidth: 0, opacity: 1, visible: true, locked: false, description: '', strokeDash: 'solid', strokeLinecap: 'butt' });
         }
-        addElements(elems);
+        addElementsAnimated(elems);
         return { cardId, titleId, ...(bodyId ? { bodyId } : {}), width, height };
       },
 
@@ -1164,7 +1208,7 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
         const anchor = align === 'center' ? 'middle' : align === 'right' ? 'end' : 'start';
         const anchorX = align === 'center' ? x + width / 2 : align === 'right' ? x + width : x;
         const valueH = valueFontSize * 1.2;
-        addElements([
+        addElementsAnimated([
           { type: 'text', id: valueId, x: anchorX, y, width, height: valueH, text: value, fontSize: valueFontSize, fontWeight: valueFontWeight, fontFamily: 'sans-serif', textAnchor: anchor, fill: valueColor, stroke: 'none', strokeWidth: 0, opacity: 1, visible: true, locked: false, description: '', strokeDash: 'solid', strokeLinecap: 'butt' },
           { type: 'text', id: labelId, x: anchorX, y: y + valueH + gap, width, height: labelFontSize * 1.4, text: label, fontSize: labelFontSize, fontWeight: 'normal', fontFamily: 'sans-serif', textAnchor: anchor, fill: labelColor, stroke: 'none', strokeWidth: 0, opacity: 1, visible: true, locked: false, description: '', strokeDash: 'solid', strokeLinecap: 'butt' },
         ]);
@@ -1191,7 +1235,7 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
           const lbl = `${Math.round(percent)}%`;
           elems.push({ type: 'text', id: labelId, x: x + width + 8, y: y - (labelFontSize / 2) + barH / 2, width: 36, height: labelFontSize * 1.4, text: lbl, fontSize: labelFontSize, fontWeight: 'normal', fontFamily: 'sans-serif', textAnchor: 'start', fill: labelColor, stroke: 'none', strokeWidth: 0, opacity: 1, visible: true, locked: false, description: '', strokeDash: 'solid', strokeLinecap: 'butt' });
         }
-        addElements(elems);
+        addElementsAnimated(elems);
         return { trackId, fillId, ...(labelId ? { labelId } : {}), width, height: barH, percent };
       },
 
@@ -1219,7 +1263,7 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
           ids.push(labelId);
           elems.push({ type: 'text', id: labelId, x: x + size / 2, y: y + size + gap, width: size, height: nameFontSize * 1.4, text: name, fontSize: nameFontSize, fontWeight: 'normal', fontFamily: 'sans-serif', textAnchor: 'middle', fill: nameColor, stroke: 'none', strokeWidth: 0, opacity: 1, visible: true, locked: false, description: '', strokeDash: 'solid', strokeLinecap: 'butt' });
         }
-        addElements(elems);
+        addElementsAnimated(elems);
         return { circleId, ...(labelId ? { labelId } : {}), size };
       },
 
@@ -1242,7 +1286,7 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
           subtitleId = freshId('text');
           elems.push({ type: 'text', id: subtitleId, x: anchorX, y: y + titleH + gap, width, height: subtitleFontSize * 1.4, text: subtitle, fontSize: subtitleFontSize, fontWeight: 'normal', fontFamily: 'sans-serif', textAnchor: anchor, fill: subtitleColor, stroke: 'none', strokeWidth: 0, opacity: 1, visible: true, locked: false, description: '', strokeDash: 'solid', strokeLinecap: 'butt' });
         }
-        addElements(elems);
+        addElementsAnimated(elems);
         return { titleId, ...(subtitleId ? { subtitleId } : {}), totalHeight: titleH + (subtitle ? gap + subtitleFontSize * 1.4 : 0) };
       },
 
@@ -1274,7 +1318,7 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
           subtitleId = freshId('text');
           elems.push({ type: 'text', id: subtitleId, x: x + padding, y: y + imageHeight + padding + titleH + gap, width: width - padding * 2, height: subH, text: subtitle, fontSize: subtitleFontSize, fontWeight: 'normal', fontFamily: 'sans-serif', textAnchor: 'start', fill: subtitleColor, stroke: 'none', strokeWidth: 0, opacity: 1, visible: true, locked: false, description: '', strokeDash: 'solid', strokeLinecap: 'butt' });
         }
-        addElements(elems);
+        addElementsAnimated(elems);
         return { ...(bgId ? { bgId } : {}), imageId, titleId, ...(subtitleId ? { subtitleId } : {}), width, height: totalH };
       },
 
@@ -1290,7 +1334,7 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
         const autoH = fontSize * 1.5 + padding * 2;
         const height = hOpt ?? autoH;
         const bgFill = accentColor + '18';
-        addElements([
+        addElementsAnimated([
           { type: 'rect', id: bgId, x, y, width, height, fill: bgFill, stroke: accentColor, strokeWidth: 1, rx, ry: rx, opacity: 1, visible: true, locked: false, description: '', strokeDash: 'solid', strokeLinecap: 'butt' },
           { type: 'rect', id: barId, x, y, width: barWidth, height, fill: accentColor, stroke: 'none', strokeWidth: 0, rx, ry: rx, opacity: 1, visible: true, locked: false, description: '', strokeDash: 'solid', strokeLinecap: 'butt' },
           { type: 'text', id: textId, x: x + barWidth + padding, y: y + (height / 2) - (fontSize / 2), width: width - barWidth - padding * 2, height: fontSize * 1.4, text, fontSize, fontWeight: 'normal', fontFamily: 'sans-serif', textAnchor: 'start', fill: fontColor, stroke: 'none', strokeWidth: 0, opacity: 1, visible: true, locked: false, description: '', strokeDash: 'solid', strokeLinecap: 'butt' },
@@ -1319,7 +1363,7 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
           const pl = placeholderFontSize;
           elems.push({ type: 'text', id: placeholderId, x: x + 10, y: inputY + (inputHeight / 2) - (pl / 2), width: width - 20, height: pl * 1.4, text: placeholder, fontSize: pl, fontWeight: 'normal', fontFamily: 'sans-serif', textAnchor: 'start', fill: placeholderColor, stroke: 'none', strokeWidth: 0, opacity: 1, visible: true, locked: false, description: '', strokeDash: 'solid', strokeLinecap: 'butt' });
         }
-        addElements(elems);
+        addElementsAnimated(elems);
         return { labelId, inputId, ...(placeholderId ? { placeholderId } : {}), totalHeight: labelH + gap + inputHeight };
       },
 
@@ -1346,7 +1390,7 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
             : { type: 'rect', id: iconId, x, y, width: iconSize, height: iconSize, fill: iconFill, stroke: 'none', strokeWidth: 0, rx: iconRx, ry: iconRx, opacity: 1, visible: true, locked: false, description: '', strokeDash: 'solid', strokeLinecap: 'butt' };
           textEl = { type: 'text', id: textId, x: centerX, y: y + iconSize + gap, width: Math.max(textW, iconSize), height: fontSize * 1.4, text, fontSize, fontWeight, fontFamily: 'sans-serif', textAnchor: 'middle', fill: fontColor, stroke: 'none', strokeWidth: 0, opacity: 1, visible: true, locked: false, description: '', strokeDash: 'solid', strokeLinecap: 'butt' };
         }
-        addElements([iconEl, textEl]);
+        addElementsAnimated([iconEl, textEl]);
         return { iconId, textId };
       },
 
@@ -1375,7 +1419,7 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
             { type: 'text', id: labelId, x: lx + lw / 2, y: ly, width: lw, height: lh, text: label, fontSize: labelFontSize, fontWeight: 'normal', fontFamily: 'sans-serif', textAnchor: 'middle', fill: labelColor, stroke: 'none', strokeWidth: 0, opacity: 1, visible: true, locked: false, description: '', strokeDash: 'solid', strokeLinecap: 'butt' },
           );
         }
-        addElements(elems);
+        addElementsAnimated(elems);
         return { lineId, ...(labelId ? { labelBgId, labelId } : {}) };
       },
 
@@ -1403,7 +1447,7 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
             elems.push({ type: 'line', id: sepId, x: cellX, y, width: 0, height: rowH, fill: 'none', stroke, strokeWidth, opacity: 1, visible: true, locked: false, description: '', strokeDash: 'solid', strokeLinecap: 'butt' });
           }
         });
-        addElements(elems);
+        addElementsAnimated(elems);
         return { rowId, cellIds, cellWidth: cellW, height: rowH };
       },
 
@@ -1433,7 +1477,7 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
           elems.push({ type: 'text', id, x: textX, y: itemY, width: width - (fill ? padding * 2 : 0) - indentX, height: fontSize * 1.4, text: `${itemPrefix}${item}`, fontSize, fontWeight, fontFamily, textAnchor: 'start', fill: i === 0 && bulletType !== 'none' ? bColor : textColor, stroke: 'none', strokeWidth: 0, opacity: 1, visible: true, locked: false, description: '', strokeDash: 'solid', strokeLinecap: 'butt' });
           return id;
         });
-        addElements(elems);
+        addElementsAnimated(elems);
         return { ...(bgId ? { bgId } : {}), itemIds, totalHeight: totalH };
       },
 
@@ -1459,7 +1503,7 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
           ids.push({ rectId, textId });
           curX += w + spacing;
         });
-        addElements(elems);
+        addElementsAnimated(elems);
         return { ids, totalWidth: curX - x - spacing, height };
       },
 
@@ -1496,7 +1540,7 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
           }
           return { dotId, titleId, ...(subtitleId ? { subtitleId } : {}), ...(dateId ? { dateId } : {}) };
         });
-        addElements(elems);
+        addElementsAnimated(elems);
         return { lineId, items: resultItems };
       },
 
@@ -1521,7 +1565,7 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
           const labelX = x + maxStars * (starSize + spacing) + labelGap;
           elems.push({ type: 'text', id: labelId, x: labelX, y: y + (starSize - labelFontSize) / 2, width: 60, height: labelFontSize * 1.4, text: `${value} / ${maxStars}`, fontSize: labelFontSize, fontWeight: 'normal', fontFamily: 'sans-serif', textAnchor: 'start', fill: labelColor, stroke: 'none', strokeWidth: 0, opacity: 1, visible: true, locked: false, description: '', strokeDash: 'solid', strokeLinecap: 'butt' });
         }
-        addElements(elems);
+        addElementsAnimated(elems);
         return { starIds, ...(labelId ? { labelId } : {}), width: maxStars * (starSize + spacing) - spacing };
       },
 
@@ -1571,7 +1615,7 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
           elems.push({ type: 'rect', id: strikeId, x: origX - 2, y: origY + originalFontSize * 0.55, width: origW, height: 1.5, fill: originalColor, stroke: 'none', strokeWidth: 0, rx: 0, ry: 0, opacity: 1, visible: true, locked: false, description: '', strokeDash: 'solid', strokeLinecap: 'butt' });
         }
 
-        addElements(elems);
+        addElementsAnimated(elems);
         return { priceId, ...(currencyId ? { currencyId } : {}), ...(originalId ? { originalId, strikeId } : {}), ...(labelId ? { labelId } : {}) };
       },
 
@@ -1629,7 +1673,7 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
           elems.push({ type: 'text', id: roleId, x: textLeftX, y: avatarY + 20, width: textW - avatarSize - 10, height: 16, text: role, fontSize: 11, fontWeight: 'normal', fontFamily: 'sans-serif', textAnchor: 'start', fill: roleColor, stroke: 'none', strokeWidth: 0, opacity: 1, visible: true, locked: false, description: '', strokeDash: 'solid', strokeLinecap: 'butt' });
         }
 
-        addElements(elems);
+        addElementsAnimated(elems);
         return { ...(bgId ? { bgId } : {}), quoteMarkId, textId, divId, avatarId, authorId, ...(roleId ? { roleId } : {}), totalHeight: totalH };
       },
 
@@ -1676,7 +1720,7 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
           elems.push({ type: 'text', id: labelId, x: x + size / 2, y: y + size + 8, width: maxLabelW, height: fontSize * 1.4, text: displayLabel, fontSize, fontWeight: 'normal', fontFamily: 'sans-serif', textAnchor: 'middle', fill: labelColor, stroke: 'none', strokeWidth: 0, opacity: 1, visible: true, locked: false, description: '', strokeDash: 'solid', strokeLinecap: 'butt' });
         }
 
-        addElements(elems);
+        addElementsAnimated(elems);
         return { frameId, cornerIds, ...(labelId ? { labelId } : {}), size };
       },
 
@@ -1685,6 +1729,14 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
         if (!fontFamily) throw new Error('fontFamily is required');
         addFont({ type: 'google', name: fontFamily });
         if (ids.length) updateElements(ids, { fontFamily });
+        try { await document.fonts.load(`20px "${fontFamily}"`); } catch {}
+        toast(
+          <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <DuotoneIcon svg={ICONS.text} size={18} />
+            <span style={{ fontFamily: `"${fontFamily}", sans-serif`, fontSize: 15, fontWeight: 600 }}>{fontFamily}</span>
+          </span>,
+          { duration: 3000, position: 'bottom-center' }
+        );
         return { loaded: fontFamily, applied_to: ids };
       },
 
@@ -1715,6 +1767,7 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
     defs, deleteElements, elements, onCanvasResize, prepareImportedElements, selectedId, selectedIds,
     sendBackward, setDefsFromImport, setPrimarySelectedId, setSelectedIds,
     updateElement, updateElements,
+    scheduleFlip, scheduleFadeIn, scheduleFlipBatch,
   ]);
 
   const agentRef = useEditorAgent({ getEditorContext: buildEditorContext, clientToolHandlers });
@@ -2007,6 +2060,7 @@ export default function EditorScreen({ canvasSize, onCanvasResize, onFinish }) {
             pickerMode={pickerMode}
             onPick={id => { setSelectedId(id); setPickerMode(false); setActiveTool('select'); }}
             inspectMode={inspectMode}
+            animOverrides={animOverrides}
           />
 
           {/* Agent lock overlay — blocks user interaction while AI is working */}

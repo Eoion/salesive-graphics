@@ -392,6 +392,7 @@ function EditorCanvas({
     agentHighlightId,
     isWorking = false,
     inspectMode = false,
+    animOverrides = {},
 }) {
     const outerRef = useRef();
     const svgRef = useRef();
@@ -762,11 +763,12 @@ function EditorCanvas({
                         svgRef.current = el;
                         if (canvasRef) canvasRef.current = el;
                     }}
-                    width={canvasSize.width}
-                    height={canvasSize.height}
                     viewBox={`0 0 ${canvasSize.width} ${canvasSize.height}`}
                     style={{
                         display: "block",
+                        width: canvasSize.width,
+                        height: canvasSize.height,
+                        transition: 'width 0.3s ease-out, height 0.3s ease-out',
                         cursor: isPanMode
                             ? "inherit"
                             : CURSOR_MAP[activeTool] || "var(--cursor-default)",
@@ -793,7 +795,9 @@ function EditorCanvas({
                             `}</style>
                         ) : null}
                     </defs>
-                    {elements.map((el) => (
+                    {elements.map((el) => {
+                            const anim = animOverrides[el.id];
+                            return (
                         <g
                             key={el.id}
                             style={{
@@ -807,6 +811,11 @@ function EditorCanvas({
                                 pointerEvents: el.locked ? "none" : undefined,
                                 ...(el.animation ? {
                                     animation: `${el.animation.name || el.animation.type} ${el.animation.duration || 1}s ${el.animation.easing || 'ease'} ${el.animation.delay || 0}s ${el.animation.repeat === 'infinite' ? 'infinite' : (el.animation.repeat || 1)} forwards`,
+                                } : {}),
+                                ...(anim ? {
+                                    transform: (anim.dx || anim.dy) ? `translate(${anim.dx || 0}px, ${anim.dy || 0}px)` : undefined,
+                                    opacity: anim.opacity != null ? anim.opacity : undefined,
+                                    transition: anim.transition || undefined,
                                 } : {}),
                             }}
                             onPointerEnter={
@@ -858,17 +867,19 @@ function EditorCanvas({
                                 );
                             })()}
                         </g>
-                    ))}
+                    );
+                    })}
                 </svg>
 
                 {/* Handles overlay */}
                 <svg
-                    width={canvasSize.width}
-                    height={canvasSize.height}
                     viewBox={`0 0 ${canvasSize.width} ${canvasSize.height}`}
                     style={{
                         position: "absolute",
                         inset: 0,
+                        width: canvasSize.width,
+                        height: canvasSize.height,
+                        transition: 'width 0.3s ease-out, height 0.3s ease-out',
                         pointerEvents: "none",
                         overflow: "visible",
                     }}
