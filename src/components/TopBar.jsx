@@ -10,6 +10,7 @@ const STEPS = [
   { key: 'preview', label: 'Preview' },
 ];
 const STEP_ORDER = { editor: 0, mapping: 1, preview: 2 };
+const SHOW_EDITOR_STEPS = new Set(['editor', 'mapping', 'preview']);
 
 export default function TopBar({
   mode,
@@ -21,6 +22,7 @@ export default function TopBar({
   theme = 'dark',
   onToggleTheme,
   user,
+  onLogout,
 }) {
   const currentIdx = STEP_ORDER[mode] ?? -1;
   const [showDocs, setShowDocs] = useState(false);
@@ -29,7 +31,18 @@ export default function TopBar({
   const isLight = theme === 'light';
   const toggleTitle = `Switch to ${isLight ? 'dark' : 'light'} mode (Ctrl+Shift+L / Cmd+Shift+L)`;
 
-  const displayUser = user || { name: 'Demo User', email: 'demo@salesive.com', initials: 'DU' };
+  const hasAuthenticatedUser = Boolean(
+    user && (user._id || user.email || user.name)
+  );
+  const displayUser = hasAuthenticatedUser ? user : null;
+  const initials = displayUser?.initials || displayUser?.name?.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase() || '??';
+  const avatarSrc = displayUser?.avatar || '';
+
+  useEffect(() => {
+    if (!hasAuthenticatedUser) {
+      setShowUserMenu(false);
+    }
+  }, [hasAuthenticatedUser]);
 
   useEffect(() => {
     if (!showUserMenu) return;
@@ -50,13 +63,12 @@ export default function TopBar({
       <div className="flex items-center gap-2" style={{ minWidth: 180 }}>
         <img src="https://salesive.com/favicon-32x32.png" alt="Salesive" style={{ width: 20, height: 20, borderRadius: 4 }} />
         <span style={{ fontWeight: 700, fontSize: 14, letterSpacing: '-0.3px', color: 'var(--text-primary)' }}>
-          Salesive
+          Salesive Graphics Engine
         </span>
-        <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>/ Template Builder</span>
       </div>
 
       {/* Step indicator — centered */}
-      {mode !== 'upload' && (
+      {SHOW_EDITOR_STEPS.has(mode) && (
         <div className="flex items-center gap-1">
           {STEPS.map((step, i) => {
             const idx = STEP_ORDER[step.key];
@@ -153,7 +165,7 @@ export default function TopBar({
             New
           </button>
         )}
-        {(mode === 'mapping' || mode === 'preview') && (
+        {(mode === 'editor' || mode === 'mapping' || mode === 'preview') && (
           <input
             value={templateName}
             onChange={e => onNameChange(e.target.value)}
@@ -178,88 +190,112 @@ export default function TopBar({
           </button>
         )}
 
-        {/* User indicator */}
-        <div ref={userMenuRef} style={{ position: 'relative' }}>
-          <button
-            onClick={() => setShowUserMenu(m => !m)}
-            title={displayUser.name}
-            style={{
-              width: 28, height: 28, borderRadius: '50%',
-              background: showUserMenu ? 'var(--accent)' : 'var(--accent-dim)',
-              border: `1px solid ${showUserMenu ? 'var(--accent)' : 'rgba(13,101,217,0.3)'}`,
-              color: showUserMenu ? '#fff' : 'var(--accent)',
-              fontSize: 10, fontWeight: 700, cursor: 'pointer',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              transition: 'all 0.12s', flexShrink: 0,
-              letterSpacing: '0.02em',
-            }}
-            onMouseEnter={e => { if (!showUserMenu) { e.currentTarget.style.background = 'var(--accent)'; e.currentTarget.style.color = '#fff'; e.currentTarget.style.borderColor = 'var(--accent)'; }}}
-            onMouseLeave={e => { if (!showUserMenu) { e.currentTarget.style.background = 'var(--accent-dim)'; e.currentTarget.style.color = 'var(--accent)'; e.currentTarget.style.borderColor = 'rgba(13,101,217,0.3)'; }}}
-          >
-            {displayUser.initials}
-          </button>
+        {hasAuthenticatedUser && (
+          <div ref={userMenuRef} style={{ position: 'relative' }}>
+            <button
+              onClick={() => setShowUserMenu(m => !m)}
+              title={displayUser.name}
+              style={{
+                width: 28, height: 28, borderRadius: '50%',
+                background: avatarSrc ? 'var(--bg-raised)' : showUserMenu ? 'var(--accent)' : 'var(--accent-dim)',
+                border: `1px solid ${showUserMenu ? 'var(--accent)' : 'rgba(13,101,217,0.3)'}`,
+                color: showUserMenu ? '#fff' : 'var(--accent)',
+                fontSize: 10, fontWeight: 700, cursor: 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                transition: 'all 0.12s', flexShrink: 0,
+                letterSpacing: '0.02em',
+                overflow: 'hidden',
+                padding: 0,
+              }}
+              onMouseEnter={e => {
+                if (!showUserMenu && !avatarSrc) {
+                  e.currentTarget.style.background = 'var(--accent)';
+                  e.currentTarget.style.color = '#fff';
+                  e.currentTarget.style.borderColor = 'var(--accent)';
+                }
+              }}
+              onMouseLeave={e => {
+                if (!showUserMenu && !avatarSrc) {
+                  e.currentTarget.style.background = 'var(--accent-dim)';
+                  e.currentTarget.style.color = 'var(--accent)';
+                  e.currentTarget.style.borderColor = 'rgba(13,101,217,0.3)';
+                }
+              }}
+            >
+              {avatarSrc ? (
+                <img src={avatarSrc} alt={displayUser.name} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+              ) : (
+                initials
+              )}
+            </button>
 
-          {showUserMenu && (
-            <div style={{
-              position: 'absolute', top: 36, right: 0, zIndex: 200,
-              background: 'var(--bg-surface)', border: '1px solid var(--border)',
-              borderRadius: 10, boxShadow: '0 8px 28px rgba(0,0,0,0.4)',
-              minWidth: 210, overflow: 'hidden',
-            }}>
-              {/* User info */}
-              <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 10 }}>
-                <div style={{
-                  width: 32, height: 32, borderRadius: '50%', flexShrink: 0,
-                  background: 'var(--accent)', color: '#fff',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: 11, fontWeight: 700,
-                }}>
-                  {displayUser.initials}
+            {showUserMenu && (
+              <div style={{
+                position: 'absolute', top: 36, right: 0, zIndex: 200,
+                background: 'var(--bg-surface)', border: '1px solid var(--border)',
+                borderRadius: 10, boxShadow: '0 8px 28px rgba(0,0,0,0.4)',
+                minWidth: 210, overflow: 'hidden',
+              }}>
+                {/* User info */}
+                <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div style={{
+                    width: 32, height: 32, borderRadius: '50%', flexShrink: 0,
+                    background: 'var(--accent)', color: '#fff',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 11, fontWeight: 700,
+                    overflow: 'hidden',
+                  }}>
+                    {avatarSrc ? (
+                      <img src={avatarSrc} alt={displayUser.name} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                    ) : (
+                      initials
+                    )}
+                  </div>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayUser.name}</div>
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'DM Mono, monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 1 }}>{displayUser.email}</div>
+                  </div>
                 </div>
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayUser.name}</div>
-                  <div style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'DM Mono, monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 1 }}>{displayUser.email}</div>
-                </div>
-              </div>
 
-              {/* Menu items */}
-              <div style={{ padding: '4px' }}>
-                {[
-                  { label: 'Profile', icon: ICONS.pencil },
-                  { label: 'Settings', icon: ICONS.layers },
-                ].map(({ label, icon }) => (
-                  <button key={label} onClick={() => setShowUserMenu(false)} style={{
+                {/* Menu items */}
+                <div style={{ padding: '4px' }}>
+                  {[
+                    { label: 'Profile', icon: ICONS.pencil },
+                    { label: 'Settings', icon: ICONS.layers },
+                  ].map(({ label, icon }) => (
+                    <button key={label} onClick={() => setShowUserMenu(false)} style={{
+                      width: '100%', display: 'flex', alignItems: 'center', gap: 8,
+                      padding: '7px 10px', borderRadius: 6, border: 'none',
+                      background: 'transparent', color: 'var(--text-secondary)',
+                      fontSize: 12, cursor: 'pointer', textAlign: 'left',
+                      fontFamily: 'Syne, sans-serif',
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-raised)'; e.currentTarget.style.color = 'var(--text-primary)'; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-secondary)'; }}
+                    >
+                      <DuotoneIcon svg={icon} size={12} />
+                      {label}
+                    </button>
+                  ))}
+                  <div style={{ height: 1, background: 'var(--border)', margin: '4px 10px' }} />
+                  <button onClick={() => { setShowUserMenu(false); onLogout?.(); }} style={{
                     width: '100%', display: 'flex', alignItems: 'center', gap: 8,
                     padding: '7px 10px', borderRadius: 6, border: 'none',
-                    background: 'transparent', color: 'var(--text-secondary)',
+                    background: 'transparent', color: 'var(--red)',
                     fontSize: 12, cursor: 'pointer', textAlign: 'left',
                     fontFamily: 'Syne, sans-serif',
                   }}
-                  onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-raised)'; e.currentTarget.style.color = 'var(--text-primary)'; }}
-                  onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-secondary)'; }}
+                  onMouseEnter={e => { e.currentTarget.style.background = 'rgba(239,68,68,0.08)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
                   >
-                    <DuotoneIcon svg={icon} size={12} />
-                    {label}
+                    <DuotoneIcon svg={ICONS.close} size={12} />
+                    Sign out
                   </button>
-                ))}
-                <div style={{ height: 1, background: 'var(--border)', margin: '4px 10px' }} />
-                <button onClick={() => setShowUserMenu(false)} style={{
-                  width: '100%', display: 'flex', alignItems: 'center', gap: 8,
-                  padding: '7px 10px', borderRadius: 6, border: 'none',
-                  background: 'transparent', color: 'var(--red)',
-                  fontSize: 12, cursor: 'pointer', textAlign: 'left',
-                  fontFamily: 'Syne, sans-serif',
-                }}
-                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(239,68,68,0.08)'; }}
-                onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
-                >
-                  <DuotoneIcon svg={ICONS.close} size={12} />
-                  Sign out
-                </button>
+                </div>
               </div>
-            </div>
-          )}
-        </div>
+            )}
+          </div>
+        )}
       </div>
     </header>
 

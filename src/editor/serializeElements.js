@@ -1,5 +1,6 @@
 import { polygonPoints, starPoints, arrowheadPoints } from './shapeHelpers.js';
 import { colorizeInlineSvgHref } from './svgIconHref.js';
+import { wrapTextContent } from './textLayout.js';
 
 function esc(str) {
   return String(str)
@@ -82,17 +83,28 @@ function serializeOne(el) {
 
     case 'text': {
       const baseline = el.y + (el.fontSize || 24);
+      const fontSize = el.fontSize || 24;
+      const lineHeight = el.lineHeight || 1.2;
+      const lines = wrapTextContent(el.text || '', {
+        width: el.width,
+        fontSize,
+        letterSpacing: el.letterSpacing,
+        textWrap: el.textWrap,
+      });
+      const textBody = lines.map((line, index) => (
+        `<tspan x="${esc(el.x)}"${index === 0 ? '' : ` dy="${esc(fontSize * lineHeight)}"`}>${esc(line || ' ')}</tspan>`
+      )).join('');
       return `<text ${attrs({
         id: el.id,
         x: el.x,
         y: baseline,
-        'font-size': el.fontSize || 24,
+        'font-size': fontSize,
         'font-weight': el.fontWeight || 'normal',
         'font-family': el.fontFamily || 'sans-serif',
         'text-anchor': el.textAnchor || 'start',
         fill: el.fill || '#000000',
         opacity: el.opacity !== 1 ? el.opacity : undefined,
-      })}${desc}${vis}${rot}${styleAttr}${rawAttrStr}>${esc(el.text || '')}</text>`;
+      })}${desc}${vis}${rot}${styleAttr}${rawAttrStr}>${textBody}</text>`;
     }
 
     case 'image': {

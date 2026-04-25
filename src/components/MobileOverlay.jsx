@@ -87,7 +87,7 @@ export default function MobileOverlay() {
             margin: 0,
             fontFamily: 'Syne, sans-serif',
           }}>
-            The Salesive Graphics Editor is a professional tool designed for high-precision design work. For the best experience, please open this app on a PC or Mac.
+            The Salesive Graphics Engine is a professional tool designed for high-precision design work. For the best experience, please open this app on a PC or Mac.
           </p>
         </div>
 

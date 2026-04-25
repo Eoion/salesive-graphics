@@ -10,11 +10,24 @@ const TOOL_PHASE_MAP = {
   list_elements: 'reading',
   get_element: 'reading',
   take_screenshot: 'reading',
+  get_canvas_screenshot: 'reading',
+  get_element_screenshot: 'reading',
+  get_region_screenshot: 'reading',
+  find_text_elements: 'reading',
+  list_collection_items: 'reading',
+  get_collection_item: 'reading',
+  review_canvas_region: 'thinking',
   select_element: 'selecting',
+  select_elements: 'selecting',
   update_element: 'editing',
+  update_elements: 'editing',
   delete_element: 'editing',
+  delete_elements: 'editing',
   add_element: 'editing',
+  add_elements: 'editing',
+  add_icon: 'editing',
   duplicate_element: 'editing',
+  duplicate_elements: 'editing',
   move_element: 'editing',
   resize_element: 'editing',
   set_fill: 'editing',
@@ -23,13 +36,27 @@ const TOOL_PHASE_MAP = {
   set_text: 'editing',
   lock_element: 'editing',
   unlock_element: 'editing',
+  hide_element: 'editing',
+  show_element: 'editing',
   bring_forward: 'editing',
   send_backward: 'editing',
+  bring_to_front: 'editing',
+  send_to_back: 'editing',
+  insert_collection_item: 'editing',
   agent_thought: 'thinking',
 };
 
+function shortenThought(value) {
+  const normalized = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!normalized) return '';
+  const sentences = normalized.match(/[^.!?]+[.!?]?/g) || [normalized];
+  const clipped = sentences.slice(0, 5).join(' ').trim();
+  return clipped.length > 240 ? `${clipped.slice(0, 237).trimEnd()}...` : clipped;
+}
+
 function toolPhase(tool) {
-  return TOOL_PHASE_MAP[tool] || 'working';
+  const normalized = String(tool || '').replace(/^editor\./, '');
+  return TOOL_PHASE_MAP[normalized] || 'working';
 }
 
 function makeId(prefix = 'msg') {
@@ -275,7 +302,7 @@ export function useEditorAgent({ getEditorContext, clientToolHandlers = {} } = {
 
       // Built-in: agent_thought
       if (tool === 'agent_thought') {
-        const thought = args?.message || args?.thought || '';
+        const thought = shortenThought(args?.message || args?.thought || '');
         setAgentCursor(prev => ({ ...prev, thought, phase: 'thinking' }));
         await new Promise(r => setTimeout(r, Math.min(thought.length * 40, 3000)));
         setAgentCursor(prev => ({ ...prev, thought: null, phase: prev.elementId ? 'working' : 'idle' }));

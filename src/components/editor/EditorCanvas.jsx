@@ -1,7 +1,11 @@
 import { useRef, useEffect, useLayoutEffect, useState, useMemo } from "react";
 import SelectionHandles from "./SelectionHandles.jsx";
+import DuotoneIcon from "../DuotoneIcon.jsx";
+import ColorPicker from "../ColorPicker.jsx";
+import { ICONS } from "../../editor/duotoneIcons.js";
 import { polygonPoints, starPoints, arrowheadPoints } from "../../editor/shapeHelpers.js";
 import { colorizeInlineSvgHref } from "../../editor/svgIconHref.js";
+import { wrapTextContent } from "../../editor/textLayout.js";
 
 // -- Helpers -------------------------------------------------------------------
 
@@ -127,7 +131,16 @@ function RenderCircle({ el }) {
 function RenderText({ el }) {
     const fontSize = el.fontSize || 24;
     const lineHeight = el.lineHeight || 1.2;
-    const lines = useMemo(() => (el.text || "").split("\n"), [el.text]);
+    const lines = useMemo(
+        () =>
+            wrapTextContent(el.text || "", {
+                width: el.width,
+                fontSize,
+                letterSpacing: el.letterSpacing,
+                textWrap: el.textWrap,
+            }),
+        [el.letterSpacing, el.text, el.textWrap, el.width, fontSize],
+    );
     const baselineY = useMemo(() => el.y + fontSize, [el.y, fontSize]);
 
     return (
@@ -366,6 +379,283 @@ const PICK_COLORS = {
     arrow: "#6366F1",
 };
 
+function SelectionQuickActions({
+    anchor,
+    locked,
+    visible,
+    showMenu,
+    canEditText,
+    canPickColor,
+    colorValue,
+    colorSwatches,
+    onToggleMenu,
+    onDuplicate,
+    onToggleLock,
+    onDelete,
+    onBringForward,
+    onSendBackward,
+    onToggleVisibility,
+    onEditText,
+    onColorChange,
+}) {
+    const [colorPickerOpen, setColorPickerOpen] = useState(false);
+
+    useEffect(() => {
+        if (!showMenu && colorPickerOpen) {
+            setColorPickerOpen(false);
+        }
+    }, [colorPickerOpen, showMenu]);
+
+    if (!anchor) return null;
+
+    const wrapperStyle = {
+        position: "absolute",
+        left: anchor.left,
+        top: anchor.top,
+        transform: anchor.placement === "below"
+            ? "translate(-50%, 12px)"
+            : "translate(-50%, calc(-100% - 12px))",
+        zIndex: 45,
+        pointerEvents: "auto",
+    };
+
+    const actionButtonStyle = {
+        width: 34,
+        height: 32,
+        border: "none",
+        background: "transparent",
+        color: "var(--text-secondary)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        cursor: "pointer",
+        transition: "background 0.12s ease, color 0.12s ease",
+        flexShrink: 0,
+    };
+
+    const menuItemStyle = {
+        width: "100%",
+        border: "none",
+        background: "transparent",
+        color: "var(--text-secondary)",
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "8px 10px",
+        fontSize: 11,
+        fontFamily: "Syne, sans-serif",
+        textAlign: "left",
+        cursor: "pointer",
+        borderRadius: 8,
+        transition: "background 0.12s ease, color 0.12s ease",
+    };
+
+    const ActionButton = ({ icon, title, onClick, danger = false, active = false }) => (
+        <button
+            type="button"
+            title={title}
+            aria-label={title}
+            onClick={onClick}
+            style={{
+                ...actionButtonStyle,
+                color: danger
+                    ? "var(--red)"
+                    : active
+                      ? "var(--accent)"
+                      : "var(--text-secondary)",
+                background: active ? "rgba(13,101,217,0.08)" : "transparent",
+            }}
+            onMouseEnter={(e) => {
+                e.currentTarget.style.background = danger ? "rgba(239,68,68,0.08)" : "rgba(13,101,217,0.08)";
+                e.currentTarget.style.color = danger ? "var(--red)" : "var(--accent)";
+            }}
+            onMouseLeave={(e) => {
+                e.currentTarget.style.background = active ? "rgba(13,101,217,0.08)" : "transparent";
+                e.currentTarget.style.color = danger
+                    ? "var(--red)"
+                    : active
+                      ? "var(--accent)"
+                      : "var(--text-secondary)";
+            }}
+        >
+            <DuotoneIcon svg={icon} size={15} />
+        </button>
+    );
+
+    const MenuItem = ({ icon, label, onClick, danger = false, accent = false }) => (
+        <button
+            type="button"
+            onClick={onClick}
+            style={{
+                ...menuItemStyle,
+                color: danger ? "var(--red)" : accent ? "var(--accent)" : "var(--text-secondary)",
+            }}
+            onMouseEnter={(e) => {
+                e.currentTarget.style.background = danger ? "rgba(239,68,68,0.08)" : "rgba(13,101,217,0.08)";
+                e.currentTarget.style.color = danger ? "var(--red)" : "var(--accent)";
+            }}
+            onMouseLeave={(e) => {
+                e.currentTarget.style.background = "transparent";
+                e.currentTarget.style.color = danger ? "var(--red)" : accent ? "var(--accent)" : "var(--text-secondary)";
+            }}
+        >
+            <DuotoneIcon svg={icon} size={14} />
+            {label}
+        </button>
+    );
+
+    return (
+        <div
+            style={wrapperStyle}
+            onPointerDown={(e) => e.stopPropagation()}
+        >
+            <div
+                style={{
+                    position: "relative",
+                    display: "flex",
+                    alignItems: "center",
+                    borderRadius: 12,
+                    border: "1px solid rgba(15,23,42,0.08)",
+                    background: "rgba(255,255,255,0.96)",
+                    boxShadow: "0 12px 30px rgba(15,23,42,0.18), 0 2px 8px rgba(15,23,42,0.08)",
+                    backdropFilter: "blur(16px)",
+                    overflow: "visible",
+                }}
+            >
+                <ActionButton
+                    icon={ICONS.copy || ICONS.paste}
+                    title="Duplicate"
+                    onClick={onDuplicate}
+                />
+                <div style={{ width: 1, alignSelf: "stretch", background: "rgba(148,163,184,0.22)" }} />
+                <ActionButton
+                    icon={locked ? ICONS.unlock : ICONS.lock}
+                    title={locked ? "Unlock" : "Lock"}
+                    onClick={onToggleLock}
+                    active={locked}
+                />
+                <div style={{ width: 1, alignSelf: "stretch", background: "rgba(148,163,184,0.22)" }} />
+                <ActionButton
+                    icon={ICONS.delete}
+                    title="Delete"
+                    onClick={onDelete}
+                    danger
+                />
+                <div style={{ width: 1, alignSelf: "stretch", background: "rgba(148,163,184,0.22)" }} />
+                <button
+                    type="button"
+                    title="More actions"
+                    aria-label="More actions"
+                    onClick={onToggleMenu}
+                    style={{
+                        ...actionButtonStyle,
+                        color: showMenu ? "var(--accent)" : "var(--text-secondary)",
+                        background: showMenu ? "rgba(13,101,217,0.08)" : "transparent",
+                    }}
+                    onMouseEnter={(e) => {
+                        e.currentTarget.style.background = "rgba(13,101,217,0.08)";
+                        e.currentTarget.style.color = "var(--accent)";
+                    }}
+                    onMouseLeave={(e) => {
+                        e.currentTarget.style.background = showMenu ? "rgba(13,101,217,0.08)" : "transparent";
+                        e.currentTarget.style.color = showMenu ? "var(--accent)" : "var(--text-secondary)";
+                    }}
+                >
+                    <span style={{ display: "flex", gap: 3 }}>
+                        <span style={{ width: 3, height: 3, borderRadius: "50%", background: "currentColor" }} />
+                        <span style={{ width: 3, height: 3, borderRadius: "50%", background: "currentColor" }} />
+                        <span style={{ width: 3, height: 3, borderRadius: "50%", background: "currentColor" }} />
+                    </span>
+                </button>
+
+                {showMenu && (
+                    <div
+                        style={{
+                            position: "absolute",
+                            top: "50%",
+                            left: "calc(100% + 10px)",
+                            transform: "translateY(-50%)",
+                            minWidth: 168,
+                            padding: 6,
+                            borderRadius: 12,
+                            border: "1px solid rgba(15,23,42,0.08)",
+                            background: "rgba(255,255,255,0.98)",
+                            boxShadow: "0 16px 36px rgba(15,23,42,0.18), 0 2px 8px rgba(15,23,42,0.08)",
+                            backdropFilter: "blur(16px)",
+                        }}
+                    >
+                        <MenuItem icon={ICONS.bringForward} label="Bring forward" onClick={onBringForward} />
+                        <MenuItem icon={ICONS.sendBackward} label="Send backward" onClick={onSendBackward} />
+                        <MenuItem icon={visible ? ICONS.close : ICONS.eye} label={visible ? "Hide layer" : "Show layer"} onClick={onToggleVisibility} />
+                        {canEditText && <MenuItem icon={ICONS.pencil} label="Edit text" onClick={onEditText} accent />}
+                        {canPickColor && (
+                            <>
+                                <div style={{ height: 1, background: "rgba(148,163,184,0.16)", margin: "6px 4px" }} />
+                                <div
+                                    style={{
+                                        padding: "8px 10px",
+                                        position: "relative",
+                                    }}
+                                >
+                                    <div
+                                        style={{
+                                            display: "flex",
+                                            alignItems: "center",
+                                            gap: 10,
+                                        }}
+                                    >
+                                        <div style={{ flex: 1, minWidth: 0 }}>
+                                            <div style={{ fontSize: 10, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                                                Color
+                                            </div>
+                                            <div style={{ fontSize: 11, color: "var(--text-secondary)", fontFamily: "DM Mono, monospace", marginTop: 4 }}>
+                                                {colorValue || "#000000"}
+                                            </div>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={() => setColorPickerOpen((open) => !open)}
+                                            style={{
+                                                width: 34,
+                                                height: 34,
+                                                borderRadius: 10,
+                                                border: `1px solid ${colorPickerOpen ? "rgba(13,101,217,0.35)" : "rgba(148,163,184,0.22)"}`,
+                                                background: colorValue || "#000000",
+                                                cursor: "pointer",
+                                                flexShrink: 0,
+                                                boxShadow: colorPickerOpen ? "0 0 0 3px rgba(13,101,217,0.12)" : "none",
+                                            }}
+                                            aria-label="Choose color"
+                                            title="Choose color"
+                                        />
+                                    </div>
+                                    {colorPickerOpen && (
+                                        <div style={{ marginTop: 10 }}>
+                                            <ColorPicker
+                                                value={colorValue || "#000000"}
+                                                onChange={onColorChange}
+                                                onClose={() => setColorPickerOpen(false)}
+                                                swatches={colorSwatches}
+                                            />
+                                        </div>
+                                    )}
+                                    {!colorPickerOpen && (
+                                        <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 8 }}>
+                                            Click swatch to edit
+                                        </div>
+                                    )}
+                                </div>
+                            </>
+                        )}
+                        <div style={{ height: 1, background: "rgba(148,163,184,0.16)", margin: "6px 4px" }} />
+                        <MenuItem icon={ICONS.delete} label="Delete layer" onClick={onDelete} danger />
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+}
+
 function EditorCanvas({
     elements,
     defs,
@@ -389,6 +679,13 @@ function EditorCanvas({
     onPick,
     eyedropperActive,
     onEyedrop,
+    onDuplicateSelection,
+    onDeleteSelection,
+    onToggleLockSelection,
+    onBringForwardSelection,
+    onSendBackwardSelection,
+    onToggleVisibilitySelection,
+    onEditTextSelection,
     agentHighlightId,
     isWorking = false,
     inspectMode = false,
@@ -422,9 +719,11 @@ function EditorCanvas({
     const [hoveredPickId, setHoveredPickId] = useState(null);
     const [spaceHeld, setSpaceHeld] = useState(false);
     const [ctrlHeld, setCtrlHeld] = useState(false);
+    const [showQuickActionMenu, setShowQuickActionMenu] = useState(false);
     const [marquee, setMarquee] = useState(null); // { x, y, w, h }
     const marqueeStartRef = useRef(null); // { x, y }
     const panningRef = useRef(null);
+    const quickActionsRef = useRef(null);
 
     // ── Sync viewport to scaleRef + callback ──────────────────────────────────
     useEffect(() => {
@@ -547,7 +846,7 @@ function EditorCanvas({
         };
     }, []);
 
-    // Auto-measure text elements and sync width/height to actual rendered bbox
+    // Auto-measure text elements and sync height (and width for unwrapped text) to rendered bbox
     useLayoutEffect(() => {
         const svg = svgRef.current;
         if (!svg || !updateElementLive) return;
@@ -558,16 +857,80 @@ function EditorCanvas({
             try {
                 const bbox = node.getBBox();
                 if (bbox.width < 1) continue;
-                if (Math.abs(bbox.width - el.width) > 1 || Math.abs(bbox.height - el.height) > 1) {
-                    updateElementLive(el.id, { width: bbox.width, height: bbox.height });
-                }
+                const wrapped = el.textWrap !== false;
+                const patch = {};
+                if (!wrapped && Math.abs(bbox.width - el.width) > 1) patch.width = bbox.width;
+                if (Math.abs(bbox.height - el.height) > 1) patch.height = bbox.height;
+                if (Object.keys(patch).length) updateElementLive(el.id, patch);
             } catch {}
         }
     }, [elements]);
 
     const selectedEl = elements.find((e) => e.id === selectedId) || null;
+    const selectedEls = elements.filter((e) => selectedIds.includes(e.id));
     const textEditEl = elements.find((e) => e.id === textEditId) || null;
     const canvasRect = svgRef.current?.getBoundingClientRect() || null;
+    const hasVisibleSelection = selectedEls.some((el) => el.visible !== false);
+    const hasUnlockedSelection = selectedEls.some((el) => !el.locked);
+
+    const selectionColorInfo = useMemo(() => {
+        if (!selectedEls.length) return { canPickColor: false, value: "#000000" };
+
+        const primary = selectedEls[0];
+        if (!primary || primary.type === "image") {
+            return { canPickColor: false, value: "#000000" };
+        }
+
+        const key = primary.type === "line" || primary.type === "arrow" ? "stroke" : "fill";
+        const rawValue = primary[key];
+        const normalized = typeof rawValue === "string" && /^#[0-9a-f]{6}$/i.test(rawValue)
+            ? rawValue
+            : "#000000";
+
+        return { canPickColor: true, value: normalized, key };
+    }, [selectedEls]);
+
+    const quickColorSwatches = useMemo(() => {
+        const colors = new Set();
+        elements.forEach((element) => {
+            if (typeof element.fill === "string" && element.fill.startsWith("#")) {
+                colors.add(element.fill.toLowerCase());
+            }
+            if (typeof element.stroke === "string" && element.stroke.startsWith("#")) {
+                colors.add(element.stroke.toLowerCase());
+            }
+            if (element.iconColors) {
+                Object.values(element.iconColors).forEach((color) => {
+                    if (typeof color === "string" && color.startsWith("#")) {
+                        colors.add(color.toLowerCase());
+                    }
+                });
+            }
+        });
+        return Array.from(colors).slice(0, 18);
+    }, [elements]);
+
+    useEffect(() => {
+        setShowQuickActionMenu(false);
+    }, [selectedId, selectedIds.length, activeTool, pickerMode, eyedropperActive, inspectMode]);
+
+    useEffect(() => {
+        if (!showQuickActionMenu) return;
+        function handlePointerDown(event) {
+            if (quickActionsRef.current && !quickActionsRef.current.contains(event.target)) {
+                setShowQuickActionMenu(false);
+            }
+        }
+        function handleEscape(event) {
+            if (event.key === "Escape") setShowQuickActionMenu(false);
+        }
+        window.addEventListener("pointerdown", handlePointerDown);
+        window.addEventListener("keydown", handleEscape);
+        return () => {
+            window.removeEventListener("pointerdown", handlePointerDown);
+            window.removeEventListener("keydown", handleEscape);
+        };
+    }, [showQuickActionMenu]);
 
     function handleDoubleClick(elId) {
         const el = elements.find((el) => el.id === elId);
@@ -720,6 +1083,20 @@ function EditorCanvas({
         // Delegated to handleOuterPointerUp via event bubbling.
     }
 
+    const quickActionAnchor = useMemo(() => {
+        if (!selectedEl || activeTool !== "select" || isOverlayMode || !fitted) return null;
+        const bounds = elBounds(selectedEl);
+        const centerX = viewport.tx + (bounds.x + bounds.width / 2) * viewport.scale;
+        const aboveY = viewport.ty + bounds.y * viewport.scale;
+        const belowY = viewport.ty + (bounds.y + bounds.height) * viewport.scale;
+        return {
+            left: centerX,
+            top: aboveY,
+            placement: aboveY < 56 ? "below" : "above",
+            fallbackTop: belowY,
+        };
+    }, [selectedEl, activeTool, isOverlayMode, fitted, viewport]);
+
     return (
         <div
             ref={outerRef}
@@ -739,8 +1116,63 @@ function EditorCanvas({
             {isWorking && (
                <div className="ai-working-border" style={{ position: 'absolute', inset: 0, zIndex: 100, pointerEvents: 'none' }} />
             )}
+            {quickActionAnchor && selectedIds.length > 0 && (
+                <div ref={quickActionsRef}>
+                    <SelectionQuickActions
+                        anchor={{
+                            left: quickActionAnchor.left,
+                            top: quickActionAnchor.placement === "below"
+                                ? quickActionAnchor.fallbackTop
+                                : quickActionAnchor.top,
+                            placement: quickActionAnchor.placement,
+                        }}
+                        locked={!hasUnlockedSelection}
+                        visible={hasVisibleSelection}
+                        showMenu={showQuickActionMenu}
+                        canEditText={selectedIds.length === 1 && selectedEl?.type === "text"}
+                        canPickColor={selectionColorInfo.canPickColor}
+                        colorValue={selectionColorInfo.value}
+                        colorSwatches={quickColorSwatches}
+                        onToggleMenu={() => setShowQuickActionMenu((value) => !value)}
+                        onDuplicate={onDuplicateSelection}
+                        onToggleLock={() => {
+                            onToggleLockSelection?.();
+                            setShowQuickActionMenu(false);
+                        }}
+                        onDelete={() => {
+                            onDeleteSelection?.();
+                            setShowQuickActionMenu(false);
+                        }}
+                        onBringForward={() => {
+                            onBringForwardSelection?.();
+                            setShowQuickActionMenu(false);
+                        }}
+                        onSendBackward={() => {
+                            onSendBackwardSelection?.();
+                            setShowQuickActionMenu(false);
+                        }}
+                        onToggleVisibility={() => {
+                            onToggleVisibilitySelection?.();
+                            setShowQuickActionMenu(false);
+                        }}
+                        onEditText={() => {
+                            onEditTextSelection?.();
+                            setShowQuickActionMenu(false);
+                        }}
+                        onColorChange={(nextColor) => {
+                            selectedEls.forEach((el) => {
+                                const colorKey = el.type === "line" || el.type === "arrow" ? "stroke" : "fill";
+                                if (el.type !== "image") {
+                                    updateElement?.(el.id, { [colorKey]: nextColor });
+                                }
+                            });
+                        }}
+                    />
+                </div>
+            )}
             {/* Viewport-transformed canvas */}
             <div
+                className="canvas-artboard"
                 style={{
                     position: "absolute",
                     left: 0,
@@ -749,11 +1181,6 @@ function EditorCanvas({
                     transformOrigin: "0 0",
                     lineHeight: 0,
                     boxShadow: "0 8px 40px rgba(0,0,0,0.6)",
-                    backgroundImage:
-                        "linear-gradient(45deg,#d0d0d0 25%,transparent 25%),linear-gradient(-45deg,#d0d0d0 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#d0d0d0 75%),linear-gradient(-45deg,transparent 75%,#d0d0d0 75%)",
-                    backgroundSize: "16px 16px",
-                    backgroundPosition: "0 0,0 8px,8px -8px,-8px 0",
-                    backgroundColor: "#f8f8f8",
                 }}
             >
 
@@ -1060,4 +1487,3 @@ function EditorCanvas({
 }
 
 export default EditorCanvas;
-

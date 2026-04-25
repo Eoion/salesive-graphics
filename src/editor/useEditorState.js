@@ -26,9 +26,9 @@ function storeElements(els) {
   try { localStorage.setItem(LS_KEY, JSON.stringify(els)); } catch {}
 }
 
-export function useEditorState(initialElements = null) {
+export function useEditorState(initialElements) {
   const [elements, setElementsState] = useState(() => {
-    if (initialElements && initialElements.length) {
+    if (Array.isArray(initialElements)) {
       syncCounter(initialElements);
       return initialElements;
     }

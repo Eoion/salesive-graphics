@@ -236,6 +236,26 @@ code,
     background-color: var(--bg-base);
 }
 
+.canvas-artboard {
+    background-image:
+        linear-gradient(45deg, #d0d0d0 25%, transparent 25%),
+        linear-gradient(-45deg, #d0d0d0 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #d0d0d0 75%),
+        linear-gradient(-45deg, transparent 75%, #d0d0d0 75%);
+    background-size: 16px 16px;
+    background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+    background-color: #f8f8f8;
+}
+
+html[data-theme="dark"] .canvas-artboard {
+    background-image:
+        linear-gradient(45deg, #2a2a2e 25%, transparent 25%),
+        linear-gradient(-45deg, #2a2a2e 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #2a2a2e 75%),
+        linear-gradient(-45deg, transparent 75%, #2a2a2e 75%);
+    background-color: #1e1e22;
+}
+
 @keyframes fadeIn {
     from {
         opacity: 0;

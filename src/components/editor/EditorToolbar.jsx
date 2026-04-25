@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import DuotoneIcon from '../DuotoneIcon.jsx';
 import { ICONS } from '../../editor/duotoneIcons.js';
-import { loadCollection } from '../../lib/collection.js';
 import IconPickerPanel from './IconPickerPanel.jsx';
 import { freshId } from '../../editor/editorConstants.js';
 
@@ -93,21 +92,19 @@ export default function EditorToolbar({
   onSaveToCollection, onOpenCollection,
   onTextEdit,
   addElement,
+  collectionItems = [],
 }) {
   const selectedEls = elements.filter(e => selectedIds.includes(e.id));
   const [dragOverId, setDragOverId] = useState(null);
-  const [collectionVersion, setCollectionVersion] = useState(0);
   const layerScrollRef = useRef();
 
-  const collection = useMemo(() => loadCollection(), [collectionVersion]);
   const isInCollection = useMemo(() =>
-    selectedEls.length > 0 && collection.some(item =>
+    selectedEls.length > 0 && collectionItems.some(item =>
       item.elements.some(e => selectedEls.some(sel => sel.id === e.id))
-    ), [collection, selectedEls]);
+    ), [collectionItems, selectedEls]);
 
   function handleSaveToCollection() {
     onSaveToCollection?.(selectedEls);
-    setCollectionVersion(v => v + 1);
   }
 
   useEffect(() => {

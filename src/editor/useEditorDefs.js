@@ -39,8 +39,12 @@ function storeDefs(defs) {
   }
 }
 
-export function useEditorDefs() {
-  const [defs, setDefs] = useState(() => loadDefs());
+export function useEditorDefs(initialDefs) {
+  const [defs, setDefs] = useState(() => (
+    initialDefs && typeof initialDefs === 'object'
+      ? normalizeDefs(initialDefs)
+      : loadDefs()
+  ));
 
   const updateDefs = useCallback((updater) => {
     setDefs(prev => {

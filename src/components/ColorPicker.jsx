@@ -65,6 +65,7 @@ export default function ColorPicker({ value, onChange, onClose, swatches }) {
   const displaySwatches = swatches && swatches.length > 0 ? swatches : PRESETS;
   const [picker, setPicker] = useState(() => pickerStateFromHex(hex));
   const [syncedHex, setSyncedHex] = useState(hex);
+  const [draggingKind, setDraggingKind] = useState(null);
   const areaRef = useRef();
   const hueRef = useRef();
   const dragging = useRef(null);
@@ -117,7 +118,10 @@ export default function ColorPicker({ value, onChange, onClose, swatches }) {
       if (dragging.current === 'area') pickArea(e);
       else if (dragging.current === 'hue') pickHue(e);
     }
-    function onUp() { dragging.current = null; }
+    function onUp() {
+      dragging.current = null;
+      setDraggingKind(null);
+    }
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
     return () => {
@@ -150,6 +154,7 @@ export default function ColorPicker({ value, onChange, onClose, swatches }) {
           e.preventDefault();
           e.stopPropagation();
           dragging.current = 'area';
+          setDraggingKind('area');
           try { e.currentTarget.setPointerCapture(e.pointerId); } catch {
             // Pointer capture can fail in older embedded browser contexts.
           }
@@ -182,13 +187,18 @@ export default function ColorPicker({ value, onChange, onClose, swatches }) {
           e.preventDefault();
           e.stopPropagation();
           dragging.current = 'hue';
+          setDraggingKind('hue');
           try { e.currentTarget.setPointerCapture(e.pointerId); } catch {
             // Pointer capture can fail in older embedded browser contexts.
           }
           pickHue(e);
         }}
         style={{
-          width: '100%', height: 12, borderRadius: 6, marginTop: 8, cursor: 'crosshair',
+          width: '100%',
+          height: 12,
+          borderRadius: 6,
+          marginTop: 8,
+          cursor: draggingKind === 'hue' ? 'grabbing' : 'grab',
           background: 'linear-gradient(to right, #f00 0%, #ff0 17%, #0f0 33%, #0ff 50%, #00f 67%, #f0f 83%, #f00 100%)',
           position: 'relative',
         }}>

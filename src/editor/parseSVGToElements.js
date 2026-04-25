@@ -118,21 +118,35 @@ export function parseSVGToElements(svgString) {
       }
       case 'text':
       case 'tspan': {
+        if (tag === 'tspan' && node.parentElement?.tagName?.toLowerCase() === 'text') {
+          break;
+        }
         const x = parseFloat(node.getAttribute('x')) || 0;
         const y = parseFloat(node.getAttribute('y')) || 0;
         const fontSizeRaw = sv(node, 'font-size');
         const fontSize = parseFloat(fontSizeRaw) || 24;
-        const text = node.textContent || '';
+        const tspans = Array.from(node.children || []).filter(
+          (child) => child.tagName?.toLowerCase() === 'tspan',
+        );
+        const text = tspans.length
+          ? tspans.map((child) => child.textContent || '').join('\n')
+          : (node.textContent || '');
         const fontWeight = sv(node, 'font-weight') || 'normal';
         const fontFamily = sv(node, 'font-family') || 'sans-serif';
         const textAnchor = sv(node, 'text-anchor') || 'start';
         const textFill = sv(node, 'fill') || '#000';
+        const lineHeight = (() => {
+          if (tspans.length < 2) return 1.2;
+          const dy = parseFloat(tspans[1].getAttribute('dy'));
+          return Number.isFinite(dy) && fontSize > 0 ? dy / fontSize : 1.2;
+        })();
         elements.push({
           id, type: 'text',
           x, y: y - fontSize,
           width: Math.max(text.length * fontSize * 0.6, 80),
-          height: fontSize * 1.4,
+          height: Math.max(fontSize * lineHeight, text.split('\n').length * fontSize * lineHeight),
           text, fontSize, fontWeight, fontFamily, textAnchor,
+          lineHeight,
           fill: textFill, stroke: 'none', strokeWidth: 0,
           strokeDash: 'solid', strokeLinecap: 'butt', opacity,
           visible: display !== 'none', locked: false, description: '',

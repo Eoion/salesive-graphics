@@ -6,19 +6,45 @@ const TOOL_LABELS = {
   get_snapshot: 'Inspect canvas',
   get_selected_elements: 'Get selected layers',
   get_canvas_screenshot: 'Capture screenshot',
+  get_element_screenshot: 'Capture element',
+  get_region_screenshot: 'Capture region',
+  find_text_elements: 'Find text',
+  list_collection_items: 'List collection',
+  get_collection_item: 'Inspect collection item',
+  insert_collection_item: 'Insert collection item',
+  review_canvas_region: 'Review region',
   select_elements: 'Select layers',
   update_elements: 'Update layers',
   delete_elements: 'Delete layers',
   add_elements: 'Add layers',
+  add_icon: 'Add icon',
+  duplicate_elements: 'Duplicate layers',
+  hide_element: 'Hide layer',
+  show_element: 'Show layer',
+  bring_to_front: 'Bring to front',
+  send_to_back: 'Send to back',
   insert_svg: 'Insert SVG',
   replace_defs: 'Replace defs',
   'editor.get_snapshot': 'Inspect canvas',
   'editor.get_selected_elements': 'Get selected layers',
   'editor.get_canvas_screenshot': 'Capture screenshot',
+  'editor.get_element_screenshot': 'Capture element',
+  'editor.get_region_screenshot': 'Capture region',
+  'editor.find_text_elements': 'Find text',
+  'editor.list_collection_items': 'List collection',
+  'editor.get_collection_item': 'Inspect collection item',
+  'editor.insert_collection_item': 'Insert collection item',
+  'editor.review_canvas_region': 'Review region',
   'editor.select_elements': 'Select layers',
   'editor.update_elements': 'Update layers',
   'editor.delete_elements': 'Delete layers',
   'editor.add_elements': 'Add layers',
+  'editor.add_icon': 'Add icon',
+  'editor.duplicate_elements': 'Duplicate layers',
+  'editor.hide_element': 'Hide layer',
+  'editor.show_element': 'Show layer',
+  'editor.bring_to_front': 'Bring to front',
+  'editor.send_to_back': 'Send to back',
   'editor.insert_svg': 'Insert SVG',
   'editor.replace_defs': 'Replace defs',
 };
@@ -33,7 +59,8 @@ function formatTime(value) {
 }
 
 function getToolLabel(tool) {
-  return TOOL_LABELS[tool] || tool || 'Tool action';
+  const normalized = String(tool || '').replace(/^editor\./, '');
+  return TOOL_LABELS[tool] || TOOL_LABELS[normalized] || normalized || 'Tool action';
 }
 
 function serializeResult(value) {

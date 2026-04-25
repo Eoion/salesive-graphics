@@ -23,12 +23,27 @@ const TOOL_LABELS = {
     get_canvas_state: "Reading canvas",
     list_elements: "Listing elements",
     get_element: "Inspecting element",
+    get_selected_elements: "Inspecting selection",
     take_screenshot: "Taking screenshot",
+    get_canvas_screenshot: "Capturing canvas screenshot",
+    get_element_screenshot: "Capturing element screenshot",
+    get_region_screenshot: "Capturing region screenshot",
+    find_text_elements: "Finding text",
+    list_collection_items: "Opening collection",
+    get_collection_item: "Inspecting collection item",
+    insert_collection_item: "Inserting collection item",
+    review_canvas_region: "Reviewing design",
     select_element: "Selecting element",
+    select_elements: "Selecting elements",
     update_element: "Updating element",
+    update_elements: "Updating elements",
     delete_element: "Deleting element",
+    delete_elements: "Deleting elements",
     add_element: "Adding element",
+    add_elements: "Adding elements",
+    add_icon: "Adding icon",
     duplicate_element: "Duplicating element",
+    duplicate_elements: "Duplicating elements",
     move_element: "Moving element",
     resize_element: "Resizing element",
     set_fill: "Changing fill",
@@ -37,13 +52,21 @@ const TOOL_LABELS = {
     set_text: "Editing text",
     lock_element: "Locking element",
     unlock_element: "Unlocking element",
+    hide_element: "Hiding element",
+    show_element: "Showing element",
     bring_forward: "Bringing forward",
     send_backward: "Sending backward",
+    bring_to_front: "Bringing to front",
+    send_to_back: "Sending to back",
     agent_thought: "Thinking",
 };
 function getToolLabel(tool) {
-    return TOOL_LABELS[tool] || (tool || "Tool").replace(/_/g, " ");
+    const normalized = String(tool || "").replace(/^editor\./, "");
+    return TOOL_LABELS[normalized] || normalized.replace(/_/g, " ") || "Tool";
 }
+
+const OLA_AVATAR_URL =
+    "https://res.cloudinary.com/computer-geek/image/upload/q_auto/f_auto/v1775964817/Salesive/ola_xikqga.jpg";
 
 // ─── Image bubble in messages ─────────────────────────────────────────────────
 function ImageBubble({ url }) {
@@ -214,12 +237,13 @@ function AiTable({ lines }) {
 function processInline(text) {
     if (typeof text !== "string") return text;
     const parts = [];
-    const re = /(!\[(.*?)\]\((.*?)\))|(\[(.*?)\]\((.*?)\))|(\*\*(.*?)\*\*)|(\*(.*?)\*)|(`(.*?)`)/g;
+    const re =
+        /(!\[(.*?)\]\((.*?)\))|(\[(.*?)\]\((.*?)\))|(\*\*(.*?)\*\*)|(\*(.*?)\*)|(`(.*?)`)/g;
     let last = 0,
         m;
     while ((m = re.exec(text)) !== null) {
         if (m.index > last) parts.push(text.slice(last, m.index));
-        
+
         if (m[1]) {
             // Image ![alt](url)
             parts.push(<ImageBubble key={m.index} url={m[3]} />);
@@ -238,11 +262,17 @@ function processInline(text) {
                         borderBottom: "1px solid rgba(13,101,217,0.3)",
                         transition: "border-color 0.15s",
                     }}
-                    onMouseEnter={(e) => e.currentTarget.style.borderBottomColor = "var(--accent)"}
-                    onMouseLeave={(e) => e.currentTarget.style.borderBottomColor = "rgba(13,101,217,0.3)"}
+                    onMouseEnter={(e) =>
+                        (e.currentTarget.style.borderBottomColor =
+                            "var(--accent)")
+                    }
+                    onMouseLeave={(e) =>
+                        (e.currentTarget.style.borderBottomColor =
+                            "rgba(13,101,217,0.3)")
+                    }
                 >
                     {m[5]}
-                </a>
+                </a>,
             );
         } else if (m[7]) {
             // Bold **text**
@@ -262,7 +292,7 @@ function processInline(text) {
                     style={{ fontStyle: "italic", color: "var(--text-muted)" }}
                 >
                     {m[10]}
-                </em>
+                </em>,
             );
         } else if (m[11]) {
             // Inline code `text`
@@ -419,7 +449,14 @@ function AiMarkdown({ content, isStreaming }) {
             result.push(<div key={key++} style={{ height: 5 }} />);
         } else {
             result.push(
-                <div key={key++} style={{ lineHeight: 1.55, wordBreak: "break-word", overflowWrap: "anywhere" }}>
+                <div
+                    key={key++}
+                    style={{
+                        lineHeight: 1.55,
+                        wordBreak: "break-word",
+                        overflowWrap: "anywhere",
+                    }}
+                >
                     {processInline(line)}
                 </div>,
             );
@@ -431,12 +468,14 @@ function AiMarkdown({ content, isStreaming }) {
     }
 
     return (
-        <div style={{
-            fontSize: 12.5,
-            color: "var(--text-secondary)",
-            wordBreak: "break-word",
-            overflowWrap: "anywhere"
-        }}>
+        <div
+            style={{
+                fontSize: 12.5,
+                color: "var(--text-secondary)",
+                wordBreak: "break-word",
+                overflowWrap: "anywhere",
+            }}
+        >
             {result}
             {isStreaming && <span className="ai-streaming-cursor" />}
         </div>
@@ -775,7 +814,6 @@ function ScreenshotPreview({ url }) {
         </>
     );
 }
-
 
 // ─── Conversation list panel ──────────────────────────────────────────────────
 function ConversationList({
@@ -1328,9 +1366,10 @@ export default function EditorAiChat({ agent }) {
                 {/* Avatar */}
                 <div
                     style={{
-                        width: 30,
-                        height: 30,
-                        borderRadius: 8,
+                        width: 32,
+                        height: 32,
+                        borderRadius: "50%",
+                        overflow: "hidden",
                         background: "var(--accent-dim)",
                         border: "1px solid rgba(13,101,217,0.25)",
                         display: "flex",
@@ -1340,10 +1379,15 @@ export default function EditorAiChat({ agent }) {
                         position: "relative",
                     }}
                 >
-                    <DuotoneIcon
-                        svg={ICONS.ai}
-                        size={15}
-                        style={{ color: "var(--accent)" }}
+                    <img
+                        src={OLA_AVATAR_URL}
+                        alt="Ola"
+                        style={{
+                            width: "100%",
+                            height: "100%",
+                            objectFit: "cover",
+                            display: "block",
+                        }}
                     />
                     <span
                         style={{
@@ -1370,7 +1414,7 @@ export default function EditorAiChat({ agent }) {
                             fontFamily: "Syne, sans-serif",
                         }}
                     >
-                        AI Assistant
+                        Ola
                     </div>
                     <div
                         style={{
@@ -1383,7 +1427,7 @@ export default function EditorAiChat({ agent }) {
                             ? "Connecting…"
                             : agentBusy
                               ? "Working…"
-                              : "Ready"}
+                              : "Always Online"}
                     </div>
                 </div>
                 {/* Actions */}
@@ -1474,19 +1518,25 @@ export default function EditorAiChat({ agent }) {
                                 style={{
                                     width: 44,
                                     height: 44,
-                                    borderRadius: 12,
+                                    borderRadius: "50%",
                                     background: "var(--accent-dim)",
                                     border: "1px solid rgba(13,101,217,0.2)",
                                     display: "flex",
                                     alignItems: "center",
                                     justifyContent: "center",
                                     margin: "0 auto 10px",
+                                    overflow: "hidden",
                                 }}
                             >
-                                <DuotoneIcon
-                                    svg={ICONS.ai}
-                                    size={20}
-                                    style={{ color: "var(--accent)" }}
+                                <img
+                                    src={OLA_AVATAR_URL}
+                                    alt="Ola"
+                                    style={{
+                                        width: "100%",
+                                        height: "100%",
+                                        objectFit: "cover",
+                                        display: "block",
+                                    }}
                                 />
                             </div>
                             <div
@@ -1498,7 +1548,7 @@ export default function EditorAiChat({ agent }) {
                                     fontFamily: "Syne, sans-serif",
                                 }}
                             >
-                                AI Design Assistant
+                                Ola
                             </div>
                             <div
                                 style={{
@@ -1509,8 +1559,8 @@ export default function EditorAiChat({ agent }) {
                                     margin: "0 auto",
                                 }}
                             >
-                                Ask me to modify your canvas, change colors, add
-                                elements, and more.
+                                Ask Ola to modify your canvas, change colors,
+                                add elements, and more.
                             </div>
                         </div>
                         <div>
@@ -1542,6 +1592,7 @@ export default function EditorAiChat({ agent }) {
                                 "Make the background dark blue",
                                 "Add a title text element",
                                 "Take a screenshot",
+                                "Surprise me!!!",
                             ].map((q) => (
                                 <button
                                     key={q}
@@ -1910,7 +1961,7 @@ export default function EditorAiChat({ agent }) {
                         }}
                         onKeyDown={handleKeyDown}
                         placeholder={
-                            isConfigured ? "Ask the AI…" : "AI not configured"
+                            isConfigured ? "Ask Ola…" : "Ola is not configured"
                         }
                         disabled={!isConfigured || isConnecting}
                         autoFocus
