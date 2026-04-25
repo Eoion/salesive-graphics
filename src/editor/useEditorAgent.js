@@ -83,7 +83,9 @@ function parseMaybeJson(value) {
 }
 
 function finalizeStreaming(messages) {
-  return messages.map(m => m.role === 'ai' && m.isStreaming ? { ...m, isStreaming: false } : m);
+  return messages
+    .filter(m => !(m.role === 'ai' && m.isStreaming && !m.content?.trim()))
+    .map(m => m.role === 'ai' && m.isStreaming ? { ...m, isStreaming: false } : m);
 }
 
 function upsertToolCall(messages, next) {
@@ -239,8 +241,10 @@ export function useEditorAgent({ getEditorContext, clientToolHandlers = {} } = {
       setMessages(prev => {
         const last = prev[prev.length - 1];
         if (last?.role === 'ai' && last.isStreaming) {
+          if (!content.trim()) return finalizeStreaming(prev.slice(0, -1)); // drop empty streaming bubble
           return [...prev.slice(0, -1), { ...last, content, isStreaming: false }];
         }
+        if (!content.trim()) return finalizeStreaming(prev); // nothing to add
         return [...finalizeStreaming(prev), { id: makeId('ai'), role: 'ai', content, createdAt: new Date().toISOString(), isStreaming: false }];
       });
     });
