@@ -16,16 +16,19 @@ import {
     wrapTextContent,
 } from "../../editor/textLayout.js";
 import { canvases, collections } from "../../lib/api.js";
-import { syncCounter, freshId } from "../../editor/editorConstants.js";
+import { syncCounter, freshId, claimId } from "../../editor/editorConstants.js";
 import EditorToolbar from "./EditorToolbar.jsx";
 import EditorCanvas from "./EditorCanvas.jsx";
 import EditorAiChat, { uploadImageToStore } from "./EditorAiChat.jsx";
 import EditorPropertiesPanel from "./EditorPropertiesPanel.jsx";
+import LayersPanel from "./LayersPanel.jsx";
+import CommandPalette from "./CommandPalette.jsx";
 import KeymapSettings from "./KeymapSettings.jsx";
 import CollectionModal from "./CollectionModal.jsx";
 import PasteSVGModal from "./PasteSVGModal.jsx";
 import VariablesPanel from "./VariablesPanel.jsx";
 import CodeEditor from "./CodeEditor.jsx";
+import CanvasSizePicker from "./CanvasSizePicker.jsx";
 import toast from "react-hot-toast";
 
 // ─── Agent cursor overlay ─────────────────────────────────────────────────────
@@ -417,6 +420,14 @@ function estimateTextWidth(lines, fontSize, letterSpacing = 0) {
     );
 }
 
+const DEFAULT_FONT_FAMILY = "sans-serif";
+
+function resolveFontFamily(fontFamily) {
+    return typeof fontFamily === "string" && fontFamily.trim()
+        ? fontFamily
+        : DEFAULT_FONT_FAMILY;
+}
+
 function makeTextPatch(baseElement, {
     text,
     width,
@@ -467,6 +478,53 @@ function makeTextPatch(baseElement, {
     };
 }
 
+// Returns the actual rendered left-edge x for a text element, adjusting for textAnchor.
+// Non-text elements return their raw x.
+function effectiveTextBounds(el) {
+    const w = el.width || 0;
+    const h = el.height || 0;
+    let x = el.x || 0;
+    if (el.type === 'text' && w > 0) {
+        if (el.textAnchor === 'middle') x = x - w / 2;
+        else if (el.textAnchor === 'end')  x = x - w;
+    }
+    return { x, y: el.y || 0, width: w, height: h };
+}
+
+function xFromRenderedLeft(el, left) {
+    const w = el.width || 0;
+    if (el.type === "text" && w > 0) {
+        if (el.textAnchor === "middle") return left + w / 2;
+        if (el.textAnchor === "end") return left + w;
+    }
+    return left;
+}
+
+// Approximate WCAG relative luminance for a hex color string.
+function hexLuminance(hex) {
+    const c = hex.replace('#', '');
+    if (c.length !== 6) return null;
+    const r = parseInt(c.slice(0,2),16)/255;
+    const g = parseInt(c.slice(2,4),16)/255;
+    const b = parseInt(c.slice(4,6),16)/255;
+    const srgb = v => v <= 0.04045 ? v/12.92 : Math.pow((v+0.055)/1.055, 2.4);
+    return 0.2126*srgb(r) + 0.7152*srgb(g) + 0.0722*srgb(b);
+}
+function contrastRatio(hex1, hex2) {
+    const l1 = hexLuminance(hex1); const l2 = hexLuminance(hex2);
+    if (l1 === null || l2 === null) return null;
+    const [hi, lo] = l1 > l2 ? [l1, l2] : [l2, l1];
+    return (hi + 0.05) / (lo + 0.05);
+}
+
+function preferredContrastTextColor(backgroundFill) {
+    const dark = "#111111";
+    const light = "#ffffff";
+    const darkRatio = contrastRatio(dark, backgroundFill) || 0;
+    const lightRatio = contrastRatio(light, backgroundFill) || 0;
+    return darkRatio >= lightRatio ? dark : light;
+}
+
 function buildRegionReview(elements, region, canvasSize, goals = []) {
     const items = elements.filter((el) => {
         const right = (el.x || 0) + (el.width || 0);
@@ -482,45 +540,178 @@ function buildRegionReview(elements, region, canvasSize, goals = []) {
     const hiddenItems = items.filter((el) => el.visible === false);
     const lockedItems = items.filter((el) => el.locked);
     const overflowItems = items.filter((el) => {
-        const w = el.width || 0;
-        const h = el.height || 0;
-        return (
-            (el.x || 0) < 0 ||
-            (el.y || 0) < 0 ||
-            (el.x || 0) + w > canvasSize.width ||
-            (el.y || 0) + h > canvasSize.height
-        );
+        const b = effectiveTextBounds(el);
+        return (b.x < 0 || b.y < 0 || b.x + b.width > canvasSize.width || b.y + b.height > canvasSize.height);
     });
-    const tinyText = textItems.filter((el) => (el.fontSize || 0) < 12);
-    const fontFamilies = [
-        ...new Set(textItems.map((el) => el.fontFamily).filter(Boolean)),
-    ];
+    const tinyText = textItems.filter((el) => (el.fontSize || 0) < 9);
+    const fontFamilies = [...new Set(textItems.map((el) => el.fontFamily).filter(Boolean))];
 
     const suggestions = [];
+
+    // 1. Overflow
     if (overflowItems.length) {
-        suggestions.push(
-            `${overflowItems.length} element(s) spill outside the canvas bounds. Reposition or resize them.`,
-        );
+        suggestions.push({
+            message: `${overflowItems.length} element(s) overflow the canvas bounds.`,
+            ids: overflowItems.map((e) => ({ id: e.id, type: e.type, currentValue: `x:${e.x},y:${e.y},w:${e.width},h:${e.height}` })),
+            action: "Call constrain_elements with these ids to auto-fix.",
+            fix: {
+                tool: "constrain_elements",
+                args: { ids: overflowItems.map((e) => e.id) },
+            },
+        });
     }
+
+    // 2. Tiny text
     if (tinyText.length) {
-        suggestions.push(
-            `${tinyText.length} text element(s) are below 12px and may be hard to read.`,
-        );
+        suggestions.push({
+            message: `${tinyText.length} text element(s) are below 9px - likely unreadable.`,
+            ids: tinyText.map((e) => ({ id: e.id, type: e.type, currentValue: `fontSize:${e.fontSize}` })),
+            action: "Increase fontSize via update_elements.",
+            fix: {
+                tool: "update_elements",
+                args: {
+                    ids: tinyText.map((e) => e.id),
+                    patch: { fontSize: 9 },
+                },
+            },
+        });
     }
+
+    // 3. Inconsistent widths among same-type elements at similar y positions (within 80px of each other)
+    const rects = items.filter((e) => e.type === "rect" && (e.width || 0) > 20);
+    if (rects.length >= 2) {
+        const widths = rects.map((e) => e.width || 0);
+        const maxW = Math.max(...widths); const minW = Math.min(...widths);
+        if (maxW - minW > 4 && maxW - minW <= maxW * 0.3) {
+            const outliers = rects.filter((e) => Math.abs((e.width || 0) - widths[0]) > 4);
+            if (outliers.length && outliers.length < rects.length) {
+                suggestions.push({
+                    message: `Inconsistent rect widths in this region: values range from ${minW}px to ${maxW}px. For a uniform layout, pick one width.`,
+                    ids: rects.map((e) => ({ id: e.id, type: e.type, currentValue: `width:${e.width}` })),
+                    action: `Set all to width:${maxW} or width:${minW} via update_elements.`,
+                    fix: {
+                        tool: "update_elements",
+                        args: {
+                            ids: rects.map((e) => e.id),
+                            patch: { width: maxW },
+                        },
+                    },
+                });
+            }
+        }
+    }
+
+    // 4. Text contrast warnings - z-order aware (hex fill on hex background only)
+    // For each text element, prefer the nearest containing rect below it.
+    const hexRe = /^#[0-9a-fA-F]{6}$/;
+    for (const t of textItems) {
+        const textFill = (t.fill || '').trim();
+        if (!hexRe.test(textFill)) continue;
+        const elIdx = elements.indexOf(t);
+        const textBounds = effectiveTextBounds(t);
+        const tx = textBounds.x, ty = textBounds.y, tr = tx + textBounds.width, tb = ty + textBounds.height;
+        let under = null;
+        let underArea = Infinity;
+        for (let i = elIdx - 1; i >= 0; i--) {
+            const r = elements[i];
+            if (r.type !== 'rect') continue;
+            if (!hexRe.test((r.fill || '').trim())) continue;
+            const rx = r.x || 0, ry = r.y || 0, rr = rx + (r.width || 0), rb = ry + (r.height || 0);
+            if (rx <= tx && ry <= ty && rr >= tr && rb >= tb) {
+                const area = (r.width || 0) * (r.height || 0);
+                if (area < underArea) {
+                    under = r;
+                    underArea = area;
+                }
+            }
+        }
+        if (under) {
+            const ratio = contrastRatio(textFill, under.fill.trim());
+            if (ratio !== null && ratio < 4.5) {
+                const suggestedFill = preferredContrastTextColor(under.fill.trim());
+                suggestions.push({
+                    message: `Low contrast: "${(t.text||'').slice(0,30)}" (${textFill}) on background ${under.fill} has a contrast ratio of ~${ratio.toFixed(1)}:1 (WCAG AA requires 4.5:1 for normal text).`,
+                    ids: [{ id: t.id, type: "text", currentValue: `fill:${textFill}` }, { id: under.id, type: "rect", currentValue: `fill:${under.fill}` }],
+                    action: "Increase text fill brightness or darken the background to reach 4.5:1+.",
+                    backgroundId: under.id,
+                    fix: {
+                        tool: "update_element",
+                        args: { id: t.id, fill: suggestedFill },
+                    },
+                });
+            }
+        }
+    }
+
+    // 5. Too many font families
     if (fontFamilies.length > 3) {
-        suggestions.push(
-            `There are ${fontFamilies.length} font families in this section. Consider reducing them for stronger hierarchy.`,
-        );
+        suggestions.push({
+            message: `${fontFamilies.length} distinct font families in this region: ${fontFamilies.join(', ')}. More than 2-3 makes the design feel chaotic.`,
+            ids: textItems.map((e) => ({ id: e.id, type: e.type, currentValue: `fontFamily:${e.fontFamily}` })),
+            action: "Use update_elements to consolidate to 2 font families.",
+            fix: {
+                tool: "update_elements",
+                args: {
+                    ids: textItems.map((e) => e.id),
+                    patch: { fontFamily: fontFamilies[0] || DEFAULT_FONT_FAMILY },
+                },
+            },
+        });
     }
+
+    // 6. Uneven horizontal gaps between same-row elements
+    const rowEls = items.filter((e) => (e.width || 0) > 0 && (e.height || 0) > 0 && e.type !== "text");
+    if (rowEls.length >= 3) {
+        const sorted = [...rowEls].sort((a, b) => (a.x || 0) - (b.x || 0));
+        const gaps = [];
+        for (let i = 1; i < sorted.length; i++) {
+            const gap = (sorted[i].x || 0) - ((sorted[i-1].x || 0) + (sorted[i-1].width || 0));
+            if (gap >= 0) gaps.push({ gap: Math.round(gap), between: [sorted[i-1].id, sorted[i].id] });
+        }
+        if (gaps.length >= 2) {
+            const gapValues = gaps.map(g => g.gap);
+            const maxGap = Math.max(...gapValues); const minGap = Math.min(...gapValues);
+            if (maxGap - minGap > 8) {
+                suggestions.push({
+                    message: `Uneven horizontal gaps detected: ranging from ${minGap}px to ${maxGap}px between elements. For consistent spacing, use distribute_elements.`,
+                    ids: rowEls.map((e) => ({ id: e.id, type: e.type, currentValue: `x:${e.x}` })),
+                    action: "Call distribute_elements({ ids: [...], axis:'horizontal', spacing: <desired gap> }) to equalize.",
+                    fix: {
+                        tool: "distribute_elements",
+                        args: {
+                            ids: rowEls.map((e) => e.id),
+                            axis: "horizontal",
+                            spacing: minGap,
+                        },
+                    },
+                });
+            }
+        }
+    }
+
+    // 7. Hidden elements
     if (hiddenItems.length) {
-        suggestions.push(
-            `${hiddenItems.length} hidden element(s) are still in this area. Remove or reveal them if they are no longer needed.`,
-        );
+        suggestions.push({
+            message: `${hiddenItems.length} hidden element(s) remain in this area.`,
+            ids: hiddenItems.map((e) => ({ id: e.id, type: e.type, currentValue: "visible:false" })),
+            action: "Delete with delete_elements or reveal with update_elements {visible:true}.",
+            fix: {
+                tool: "update_elements",
+                args: {
+                    ids: hiddenItems.map((e) => e.id),
+                    patch: { visible: true },
+                },
+            },
+        });
     }
+
     if (!suggestions.length) {
-        suggestions.push(
-            "The section looks structurally clean. Focus on stronger hierarchy, spacing consistency, and contrast polish.",
-        );
+        suggestions.push({
+            message: "No structural issues detected in this region.",
+            ids: [],
+            action: null,
+            fix: null,
+        });
     }
 
     return {
@@ -543,15 +734,20 @@ export default function EditorScreen({
     initialDefs,
     canvasRecord = null,
     templateName = "Untitled Template",
+    onNameChange,
     onCanvasRecordChange,
     onCanvasesRefresh,
 }) {
     const [activeTool, setActiveTool] = useState("select");
     const [activeDock, setActiveDock] = useState("ai");
+    const [showCommandPalette, setShowCommandPalette] = useState(false);
     const [showKeymap, setShowKeymap] = useState(false);
     const [showCollection, setShowCollection] = useState(false);
     const [showPasteSVG, setShowPasteSVG] = useState(false);
     const [showVariables, setShowVariables] = useState(false);
+    const [showResizePicker, setShowResizePicker] = useState(false);
+    const [liveCanvasSize, setLiveCanvasSize] = useState(null);
+    const effectiveCanvasSize = liveCanvasSize ?? canvasSize;
     const [codeEditElement, setCodeEditElement] = useState(null);
     const [snapEnabled, setSnapEnabled] = useState(false);
     const [zoomDisplay, setZoomDisplay] = useState(100);
@@ -570,6 +766,25 @@ export default function EditorScreen({
     const [isPublic, setIsPublic] = useState(canvasRecord?.public ?? true);
     const [collectionItems, setCollectionItems] = useState([]);
     const [collectionsLoading, setCollectionsLoading] = useState(false);
+    const [groups, setGroups] = useState(() => canvasRecord?.groups || {});
+    const groupCounterRef = useRef(0);
+
+    // Component-level group helpers (stable callbacks usable outside clientToolHandlers)
+    const makeGroupUI = useCallback((elementIds, name) => {
+        groupCounterRef.current += 1;
+        const gid = `grp_${Date.now()}_${groupCounterRef.current}`;
+        const deduped = [...new Set(elementIds)];
+        setGroups(prev => ({ ...prev, [gid]: { id: gid, name: name || 'Group', elementIds: deduped } }));
+        return gid;
+    }, []);
+
+    const dissolveGroupUI = useCallback((groupId) => {
+        setGroups(prev => { const next = { ...prev }; delete next[groupId]; return next; });
+    }, []);
+
+    const renameGroupUI = useCallback((groupId, name) => {
+        setGroups(prev => prev[groupId] ? { ...prev, [groupId]: { ...prev[groupId], name } } : prev);
+    }, []);
 
     const scaleRef = useRef(1);
     const canvasRef = useRef();
@@ -647,6 +862,26 @@ export default function EditorScreen({
         setIsPublic(canvasRecord?.public ?? true);
     }, [canvasRecord?.public]);
 
+    const handlePaletteInsertIcon = useCallback((dataUrl, _name) => {
+        const w = canvasSize.width, h = canvasSize.height;
+        const id = freshId('image');
+        addElement({
+            id, type: 'image',
+            x: Math.round(w / 2 - 40), y: Math.round(h / 2 - 40),
+            width: 80, height: 80,
+            href: dataUrl,
+            fill: '#0d65d9', iconColors: {},
+            stroke: 'none', strokeWidth: 0,
+            strokeDash: 'solid', strokeLinecap: 'butt',
+            opacity: 1, visible: true, locked: false, description: '',
+        });
+    }, [canvasSize, addElement]);
+
+    const handlePaletteSelectElement = useCallback((id) => {
+        setSelectedIds([id]);
+        setSelectedId(id);
+    }, [setSelectedIds, setSelectedId]);
+
     const refreshCollectionItems = useCallback(async () => {
         setCollectionsLoading(true);
         try {
@@ -672,10 +907,11 @@ export default function EditorScreen({
             canvasSize,
             elements,
             defs,
+            groups,
             svg,
             previewSvg: svg,
         };
-    }, [canvasRecord?._id, canvasSize, defs, elements, isPublic, templateName]);
+    }, [canvasRecord?._id, canvasSize, defs, elements, groups, isPublic, templateName]);
 
     const refreshCanvasRecord = useCallback(
         (canvas) => {
@@ -803,6 +1039,7 @@ export default function EditorScreen({
         canvasSize,
         snapEnabled,
         gridSize: 8,
+        groups,
     });
 
     const handleSetActiveTool = useCallback(
@@ -879,7 +1116,7 @@ export default function EditorScreen({
                 return;
             }
             // Lock/unlock selected (Ctrl+L)
-            if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "l") {
+            if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "l") {
                 if (selectedIds.length) {
                     e.preventDefault();
                     const hasUnlocked = selectedIds.some(
@@ -972,6 +1209,28 @@ export default function EditorScreen({
                 const el = elements.find((el) => el.id === selectedId);
                 if (el && !el.locked)
                     updateElement(selectedId, { x: el.x + dx, y: el.y + dy });
+                return;
+            }
+
+            // Ctrl/Cmd+K — command palette
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+                e.preventDefault();
+                setShowCommandPalette((v) => !v);
+                return;
+            }
+
+            // Ctrl/Cmd+G — group selected; Ctrl/Cmd+Shift+G — ungroup
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'g') {
+                e.preventDefault();
+                if (e.shiftKey) {
+                    // Ungroup: dissolve any group that contains a selected element
+                    const groupsToDissolve = Object.values(groups).filter(
+                        (g) => g.elementIds.some((id) => selectedIds.includes(id))
+                    );
+                    groupsToDissolve.forEach((g) => dissolveGroupUI(g.id));
+                } else if (selectedIds.length >= 2) {
+                    makeGroupUI(selectedIds);
+                }
                 return;
             }
 
@@ -1141,13 +1400,14 @@ export default function EditorScreen({
         const W = canvasSize.width;
         const H = canvasSize.height;
         const elementsWithBounds = elements.map((el) => {
+            const b = effectiveTextBounds(el);
+            const oL = b.x < 0 ? -b.x : 0;
+            const oT = b.y < 0 ? -b.y : 0;
+            const oR = b.x + b.width > W ? b.x + b.width - W : 0;
+            const oB = b.y + b.height > H ? b.y + b.height - H : 0;
+            const hasOverflow = oL > 0 || oT > 0 || oR > 0 || oB > 0;
             const w = el.width || 0;
             const h = el.height || 0;
-            const oL = el.x < 0 ? -el.x : 0;
-            const oT = el.y < 0 ? -el.y : 0;
-            const oR = el.x + w > W ? el.x + w - W : 0;
-            const oB = el.y + h > H ? el.y + h - H : 0;
-            const hasOverflow = oL > 0 || oT > 0 || oR > 0 || oB > 0;
             return {
                 id: el.id,
                 type: el.type,
@@ -1191,6 +1451,7 @@ export default function EditorScreen({
                     elementCount: item.elements?.length || 0,
                 })),
             },
+            groups: Object.values(groups).map(g => ({ groupId: g.id, name: g.name, elementIds: g.elementIds })),
             ...(overflowCount > 0
                 ? {
                       WARNING: `${overflowCount} element(s) overflow canvas bounds — call check_layout for details.`,
@@ -1205,7 +1466,7 @@ export default function EditorScreen({
             },
             svg: serializeElements(elements, canvasSize, defs),
         };
-    }, [canvasSize, collectionItems, defs, elements, selectedId, selectedIds]);
+    }, [canvasSize, collectionItems, defs, elements, groups, selectedId, selectedIds]);
 
     const captureCanvasScreenshot = useCallback(
         async (options = {}) => {
@@ -1279,12 +1540,25 @@ export default function EditorScreen({
                 offsetY = canvasSize.height / 2 - minY;
             }
 
-            return cloned.map((element) => ({
-                ...element,
-                id: freshId(element.type || "element"),
-                x: (element.x ?? 0) + offsetX,
-                y: (element.y ?? 0) + offsetY,
-            }));
+            // Track IDs claimed in this batch so duplicates within the batch
+            // also get fresh IDs.
+            const takenIds = new Set(elements.map((e) => e.id));
+            return cloned.map((element) => {
+                let id;
+                if (element.id && !takenIds.has(element.id)) {
+                    id = element.id;
+                    claimId(id);
+                } else {
+                    id = freshId(element.type || "element");
+                }
+                takenIds.add(id);
+                return {
+                    ...element,
+                    id,
+                    x: (element.x ?? 0) + offsetX,
+                    y: (element.y ?? 0) + offsetY,
+                };
+            });
         },
         [canvasSize, elements],
     );
@@ -1307,11 +1581,12 @@ export default function EditorScreen({
         [addPreparedElements, prepareImportedElements],
     );
 
-    async function handleSaveToCollection(selectedEls) {
-        const name =
+    async function handleSaveToCollection(selectedEls, overrideName) {
+        const name = overrideName || (
             selectedEls.length === 1
                 ? selectedEls[0].text || selectedEls[0].id
-                : `${selectedEls.length} elements`;
+                : `${selectedEls.length} elements`
+        );
 
         let minX = Infinity;
         let minY = Infinity;
@@ -1380,8 +1655,122 @@ export default function EditorScreen({
 
     const clientToolHandlers = useMemo(() => {
         function addElementsAnimated(els) {
+            shiftElemsUp(els);
             addElements(els);
             for (const el of els) scheduleFadeIn(el.id);
+        }
+
+        const shiftElemsUp = (elems) => {
+            const maxB = Math.max(...elems.filter(e => e.type !== "line" && e.y !== undefined && e.height !== undefined).map(e => e.y + e.height));
+            if (maxB > canvasSize.height) {
+                const shift = Math.max(0, Math.min(maxB - canvasSize.height, Math.min(...elems.filter(e => e.y !== undefined).map(e => e.y))));
+                if (shift > 0) elems.forEach(e => { if (e.y !== undefined) e.y -= shift; });
+            }
+        };
+
+        // ── Group helpers ─────────────────────────────────────────────────────
+        function freshGroupId() {
+            groupCounterRef.current += 1;
+            return `grp_${Date.now()}_${groupCounterRef.current}`;
+        }
+
+        // Expand a mixed array of element IDs and group IDs into element IDs only.
+        function resolveToElementIds(inputIds) {
+            const out = [];
+            const seen = new Set();
+            for (const id of (inputIds || [])) {
+                if (groups[id]) {
+                    for (const eid of groups[id].elementIds) {
+                        if (!seen.has(eid)) { seen.add(eid); out.push(eid); }
+                    }
+                } else {
+                    if (!seen.has(id)) { seen.add(id); out.push(id); }
+                }
+            }
+            return out;
+        }
+
+        function makeGroup(elementIds, name) {
+            const gid = freshGroupId();
+            const deduped = [...new Set(elementIds)];
+            setGroups(prev => ({ ...prev, [gid]: { id: gid, name: name || gid, elementIds: deduped } }));
+            return gid;
+        }
+
+        function makeRectElement({
+            id = freshId("rect"),
+            x = 0,
+            y = 0,
+            width = 100,
+            height = 40,
+            fill = "#ffffff",
+            stroke = "none",
+            strokeWidth = 0,
+            rx = 0,
+            opacity = 1,
+        } = {}) {
+            return {
+                type: "rect", id, x, y, width, height, fill, stroke, strokeWidth,
+                rx, ry: rx, opacity, visible: true, locked: false, description: "",
+                strokeDash: "solid", strokeLinecap: "butt",
+            };
+        }
+
+        function makeTextElement({
+            id = freshId("text"),
+            x = 0,
+            y = 0,
+            width = 100,
+            height,
+            text = "",
+            fontSize = 14,
+            fontWeight = "normal",
+            fontFamily = "sans-serif",
+            fill = "#111111",
+            textAnchor = "start",
+            lineHeight = 1.2,
+            textWrap = true,
+        } = {}) {
+            const normalizedText = normalizeAgentText(text);
+            return {
+                type: "text", id, x, y, width,
+                height: height ?? measureWrappedTextHeight(normalizedText, { width, fontSize, lineHeight, textWrap }),
+                text: normalizedText, fontSize, fontWeight, fontFamily, textAnchor,
+                lineHeight, textWrap, fill, stroke: "none", strokeWidth: 0,
+                opacity: 1, visible: true, locked: false, description: "",
+                strokeDash: "solid", strokeLinecap: "butt",
+            };
+        }
+
+        function makeImageElement({
+            id = freshId("image"),
+            x = 0,
+            y = 0,
+            width = 100,
+            height = 100,
+            href = "",
+            fill = "#e2e8f0",
+            iconColors = {},
+            rx = 0,
+        } = {}) {
+            return {
+                type: "image", id, x, y, width, height, href, fill, iconColors,
+                stroke: "none", strokeWidth: 0, rx, ry: rx, opacity: 1,
+                visible: true, locked: false, description: "",
+                strokeDash: "solid", strokeLinecap: "butt",
+            };
+        }
+
+        function pruneGroupsAfterDelete(deletedIds) {
+            const del = new Set(deletedIds);
+            setGroups(prev => {
+                const next = {};
+                for (const [gid, g] of Object.entries(prev)) {
+                    const remaining = g.elementIds.filter(id => !del.has(id));
+                    if (remaining.length > 0) next[gid] = { ...g, elementIds: remaining };
+                }
+                return next;
+            });
         }
 
         // Render canvas to PNG, upload, and return URL
@@ -1414,10 +1803,12 @@ export default function EditorScreen({
                     locked: el.locked,
                     visible: el.visible,
                     fontSize: el.fontSize,
+                    fontFamily: el.fontFamily,
                 })),
                 selectedId,
                 selectedIds,
                 collectionCount: collectionItems.length,
+                groups: Object.values(groups).map(g => ({ groupId: g.id, name: g.name, elementIds: g.elementIds })),
             }),
             list_elements: async () =>
                 elements.map((el, index) => ({
@@ -1450,8 +1841,16 @@ export default function EditorScreen({
                 selectedIds,
                 svg: serializeElements(elements, canvasSize, defs),
             }),
-            get_selected_elements: async () =>
-                elements.filter((el) => selectedIds.includes(el.id)),
+            get_selected_elements: async () => {
+                const selectedSet = new Set(selectedIds);
+                if (selectedId) selectedSet.add(selectedId);
+                const selected = elements.filter((el) => selectedSet.has(el.id));
+                return {
+                    selectedIds: selected.map((el) => el.id),
+                    count: selected.length,
+                    elements: selected,
+                };
+            },
 
             // ── Screenshot ────────────────────────────────────────────────────────
             take_screenshot: async () => {
@@ -1584,6 +1983,89 @@ export default function EditorScreen({
                 for (const addedId of ids) scheduleFadeIn(addedId);
                 return { insertedIds: ids, count: ids.length, sourceId: id };
             },
+            save_to_collection: async ({ ids, name } = {}) => {
+                const targetEls = ids && ids.length
+                    ? ids.map((id) => elements.find((e) => e.id === id)).filter(Boolean)
+                    : elements.filter((e) => selectedIds.includes(e.id));
+                if (!targetEls.length) throw new Error("No elements to save. Provide ids or select elements first.");
+                const collName = name || (targetEls.length === 1
+                    ? (targetEls[0].text || targetEls[0].id)
+                    : `${targetEls.length} elements`);
+                await handleSaveToCollection(targetEls, collName);
+                return { saved: true, name: collName, count: targetEls.length };
+            },
+
+            // ── Groups ────────────────────────────────────────────────────────────
+            create_group: async ({ ids = [], name } = {}) => {
+                const elementIds = resolveToElementIds(ids).filter(id => elements.some(e => e.id === id));
+                if (!elementIds.length) throw new Error("No valid element IDs to group.");
+                const groupId = makeGroup(elementIds, name);
+                return { groupId, name: name || groupId, count: elementIds.length, elementIds };
+            },
+            add_to_group: async ({ groupId, ids = [] } = {}) => {
+                if (!groups[groupId]) throw new Error(`Group "${groupId}" not found.`);
+                const newIds = ids.filter(id => elements.some(e => e.id === id));
+                setGroups(prev => {
+                    const g = prev[groupId];
+                    const merged = [...new Set([...g.elementIds, ...newIds])];
+                    return { ...prev, [groupId]: { ...g, elementIds: merged } };
+                });
+                return { groupId, count: (groups[groupId]?.elementIds.length || 0) + newIds.length };
+            },
+            remove_from_group: async ({ groupId, ids = [] } = {}) => {
+                if (!groups[groupId]) throw new Error(`Group "${groupId}" not found.`);
+                const remove = new Set(ids);
+                setGroups(prev => {
+                    const g = prev[groupId];
+                    const remaining = g.elementIds.filter(id => !remove.has(id));
+                    if (!remaining.length) {
+                        const next = { ...prev };
+                        delete next[groupId];
+                        return next;
+                    }
+                    return { ...prev, [groupId]: { ...g, elementIds: remaining } };
+                });
+                return { groupId, removed: ids.length };
+            },
+            dissolve_group: async ({ groupId } = {}) => {
+                if (!groups[groupId]) throw new Error(`Group "${groupId}" not found.`);
+                const elementIds = groups[groupId].elementIds;
+                setGroups(prev => { const next = { ...prev }; delete next[groupId]; return next; });
+                return { dissolved: groupId, elementIds };
+            },
+            rename_group: async ({ groupId, name } = {}) => {
+                if (!groups[groupId]) throw new Error(`Group "${groupId}" not found.`);
+                setGroups(prev => ({ ...prev, [groupId]: { ...prev[groupId], name } }));
+                return { groupId, name };
+            },
+            list_groups: async () =>
+                Object.values(groups).map(g => ({
+                    groupId: g.id,
+                    name: g.name,
+                    elementCount: g.elementIds.length,
+                    elementIds: g.elementIds,
+                })),
+            get_group: async ({ groupId } = {}) => {
+                const g = groups[groupId];
+                if (!g) throw new Error(`Group "${groupId}" not found.`);
+                const members = g.elementIds.map(id => {
+                    const el = elements.find(e => e.id === id);
+                    return el ? { id: el.id, type: el.type, x: el.x, y: el.y, width: el.width, height: el.height } : { id, missing: true };
+                });
+                return { groupId: g.id, name: g.name, elementCount: g.elementIds.length, members };
+            },
+
+            // ── History ───────────────────────────────────────────────────────────
+            undo_last_action: async () => {
+                if (!canUndo) return { undone: false, message: "Nothing to undo." };
+                undo();
+                return { undone: true };
+            },
+            redo_last_action: async () => {
+                if (!canRedo) return { redone: false, message: "Nothing to redo." };
+                redo();
+                return { redone: true };
+            },
 
             // ── Select ────────────────────────────────────────────────────────────
             select_element: async ({ id } = {}) => {
@@ -1672,6 +2154,27 @@ export default function EditorScreen({
                 updateElement(id, patch);
                 return { id, ...patch };
             },
+            batch_update_texts: async ({ updates = [] } = {}) => {
+                const results = [];
+                for (const entry of updates) {
+                    const current = elements.find((e) => e.id === entry.id);
+                    if (!current || current.type !== "text") {
+                        results.push({ id: entry.id, skipped: true });
+                        continue;
+                    }
+                    const patch = makeTextPatch(current, {
+                        text: entry.text,
+                        width: entry.width,
+                        fontSize: entry.fontSize,
+                        lineHeight: entry.lineHeight,
+                        textWrap: entry.textWrap,
+                        autoFitWidth: entry.autoFitWidth,
+                    });
+                    updateElement(entry.id, patch);
+                    results.push({ id: entry.id, updated: Object.keys(patch) });
+                }
+                return { updated: results.filter((r) => !r.skipped).length, results };
+            },
             move_element: async ({ id, x, y } = {}) => {
                 const oldEl = elements.find((e) => e.id === id);
                 if (!oldEl) throw new Error(`Element "${id}" not found`);
@@ -1711,10 +2214,11 @@ export default function EditorScreen({
                 return { deleted: id };
             },
             delete_elements: async ({ ids = [] } = {}) => {
-                const valid = ids.filter((id) =>
+                const resolved = resolveToElementIds(ids);
+                const valid = resolved.filter((id) =>
                     elements.some((e) => e.id === id),
                 );
-                if (valid.length) deleteElements(valid);
+                if (valid.length) { deleteElements(valid); pruneGroupsAfterDelete(valid); }
                 return { deletedIds: valid, count: valid.length };
             },
 
@@ -1810,6 +2314,7 @@ export default function EditorScreen({
                         e.y2 = y2;
                     }
                     if (e.type === "text") {
+                        e.fontFamily = resolveFontFamily(e.fontFamily);
                         Object.assign(
                             e,
                             makeTextPatch(e, {
@@ -1850,26 +2355,56 @@ export default function EditorScreen({
                 scheduleFadeIn(newId);
                 return { originalId: id, newId };
             },
-            duplicate_elements: async ({ ids = [], offset = 10 } = {}) => {
-                const valid = ids
+            duplicate_elements: async ({ ids = [], offset = 40, dx, dy } = {}) => {
+                // Expand group IDs so all paired members are included automatically.
+                const resolvedIds = resolveToElementIds(ids);
+                const valid = resolvedIds
                     .map((id) => elements.find((entry) => entry.id === id))
                     .filter(Boolean);
                 if (!valid.length) return { duplicatedIds: [], count: 0 };
                 syncCounter(elements);
+                const ox = dx !== undefined ? dx : offset;
+                const oy = dy !== undefined ? dy : (dx !== undefined ? 0 : offset);
+                // Map old ID → new ID so we can re-create group relationships.
+                const idMap = {};
                 const nextElements = valid.map((src) => {
                     const newId = freshId(src.type);
+                    idMap[src.id] = newId;
                     return {
                         ...structuredClone(src),
                         id: newId,
-                        x: (src.x || 0) + offset,
-                        y: (src.y || 0) + offset,
+                        x: (src.x || 0) + ox,
+                        y: (src.y || 0) + oy,
                     };
                 });
                 addElements(nextElements);
                 nextElements.forEach((entry) => scheduleFadeIn(entry.id));
+                // Re-create any groups that were fully included in this duplication.
+                const newGroupIds = [];
+                for (const g of Object.values(groups)) {
+                    const mappedIds = g.elementIds.map(id => idMap[id]).filter(Boolean);
+                    if (mappedIds.length === g.elementIds.length) {
+                        const newGid = makeGroup(mappedIds, g.name ? `${g.name} copy` : undefined);
+                        newGroupIds.push(newGid);
+                    }
+                }
+                // Detect which newly-placed elements overlap existing ones.
+                const allExisting = elements; // snapshot before addElements resolved
+                const overlaps = nextElements
+                    .filter((ne) => {
+                        const nl = ne.x || 0, nt = ne.y || 0, nr = nl + (ne.width || 0), nb = nt + (ne.height || 0);
+                        return allExisting.some((ex) => {
+                            if (ex.id === ne.id) return false;
+                            const el = ex.x || 0, et = ex.y || 0, er = el + (ex.width || 0), eb = et + (ex.height || 0);
+                            return nl < er && nr > el && nt < eb && nb > et;
+                        });
+                    })
+                    .map((ne) => ne.id);
                 return {
                     duplicatedIds: nextElements.map((entry) => entry.id),
                     count: nextElements.length,
+                    ...(newGroupIds.length ? { duplicatedGroupIds: newGroupIds } : {}),
+                    ...(overlaps.length ? { overlaps, overlapWarning: `${overlaps.length} duplicated element(s) overlap existing elements. Consider adjusting dx/dy offset.` } : {}),
                 };
             },
             add_icon: async ({
@@ -1912,13 +2447,15 @@ export default function EditorScreen({
             },
 
             // ── Layer ─────────────────────────────────────────────────────────────
-            bring_forward: async ({ id } = {}) => {
-                bringForward(id);
-                return { id };
+            bring_forward: async ({ id, steps = 1 } = {}) => {
+                const n = Math.max(1, Math.round(steps));
+                for (let i = 0; i < n; i++) bringForward(id);
+                return { id, steps: n };
             },
-            send_backward: async ({ id } = {}) => {
-                sendBackward(id);
-                return { id };
+            send_backward: async ({ id, steps = 1 } = {}) => {
+                const n = Math.max(1, Math.round(steps));
+                for (let i = 0; i < n; i++) sendBackward(id);
+                return { id, steps: n };
             },
             bring_to_front: async ({ id } = {}) => {
                 const currentIndex = elements.findIndex((el) => el.id === id);
@@ -2001,6 +2538,7 @@ export default function EditorScreen({
                 ids = [],
                 align = "center-h",
                 margin = 0,
+                relativeTo = "canvas",
             } = {}) => {
                 const W = canvasSize.width;
                 const H = canvasSize.height;
@@ -2009,31 +2547,80 @@ export default function EditorScreen({
                     return { aligned: 0, message: "No matching element IDs" };
                 const updates = [];
                 const flipEntries = [];
-                for (const el of targets) {
-                    const w = el.width || 0;
-                    const h = el.height || 0;
-                    let patch = {};
-                    if (align === "left") patch = { x: margin };
-                    else if (align === "right") patch = { x: W - w - margin };
-                    else if (align === "center-h")
-                        patch = { x: Math.round((W - w) / 2) };
-                    else if (align === "top") patch = { y: margin };
-                    else if (align === "bottom") patch = { y: H - h - margin };
-                    else if (align === "center-v")
-                        patch = { y: Math.round((H - h) / 2) };
-                    else if (align === "center")
-                        patch = {
-                            x: Math.round((W - w) / 2),
-                            y: Math.round((H - h) / 2),
+
+                // Group-centering modes: shift all elements by the same delta so
+                // their collective bounding box is centered on the canvas.
+                // Use these when elements should stay together (e.g. a label + its rect).
+                // Use center-h / center-v when each element should be centered individually.
+                if (align === "group-center-h" || align === "group-center-v" || align === "group-center") {
+                    const minX = Math.min(...targets.map((e) => e.x || 0));
+                    const maxX = Math.max(...targets.map((e) => (e.x || 0) + (e.width || 0)));
+                    const minY = Math.min(...targets.map((e) => e.y || 0));
+                    const maxY = Math.max(...targets.map((e) => (e.y || 0) + (e.height || 0)));
+                    const dx = align !== "group-center-v" ? Math.round((W - (maxX - minX)) / 2) - minX : 0;
+                    const dy = align !== "group-center-h" ? Math.round((H - (maxY - minY)) / 2) - minY : 0;
+                    for (const el of targets) {
+                        const patch = {
+                            ...(dx !== 0 ? { x: (el.x || 0) + dx } : {}),
+                            ...(dy !== 0 ? { y: (el.y || 0) + dy } : {}),
                         };
-                    updateElement(el.id, patch);
-                    flipEntries.push({
-                        id: el.id,
-                        oldEl: el,
-                        newEl: { ...el, ...patch },
-                    });
-                    updates.push({ id: el.id, ...patch });
+                        if (!Object.keys(patch).length) continue;
+                        updateElement(el.id, patch);
+                        flipEntries.push({ id: el.id, oldEl: el, newEl: { ...el, ...patch } });
+                        updates.push({ id: el.id, ...patch });
+                    }
+                } else if (relativeTo === "group") {
+                    // Align elements relative to each other (group bounding box).
+                    // left/right/center-h align on the x-axis; top/bottom/center-v on y-axis.
+                    const minX = Math.min(...targets.map((e) => e.x || 0));
+                    const maxX = Math.max(...targets.map((e) => (e.x || 0) + (e.width || 0)));
+                    const minY = Math.min(...targets.map((e) => e.y || 0));
+                    const maxY = Math.max(...targets.map((e) => (e.y || 0) + (e.height || 0)));
+                    const groupCX = (minX + maxX) / 2;
+                    const groupCY = (minY + maxY) / 2;
+                    for (const el of targets) {
+                        const w = el.width || 0;
+                        const h = el.height || 0;
+                        let patch = {};
+                        if (align === "left") patch = { x: minX };
+                        else if (align === "right") patch = { x: maxX - w };
+                        else if (align === "center-h") patch = { x: Math.round(groupCX - w / 2) };
+                        else if (align === "top") patch = { y: minY };
+                        else if (align === "bottom") patch = { y: maxY - h };
+                        else if (align === "center-v") patch = { y: Math.round(groupCY - h / 2) };
+                        else if (align === "center") patch = {
+                            x: Math.round(groupCX - w / 2),
+                            y: Math.round(groupCY - h / 2),
+                        };
+                        if (!Object.keys(patch).length) continue;
+                        updateElement(el.id, patch);
+                        flipEntries.push({ id: el.id, oldEl: el, newEl: { ...el, ...patch } });
+                        updates.push({ id: el.id, ...patch });
+                    }
+                } else {
+                    for (const el of targets) {
+                        const w = el.width || 0;
+                        const h = el.height || 0;
+                        let patch = {};
+                        if (align === "left") patch = { x: margin };
+                        else if (align === "right") patch = { x: W - w - margin };
+                        else if (align === "center-h")
+                            patch = { x: Math.round((W - w) / 2) };
+                        else if (align === "top") patch = { y: margin };
+                        else if (align === "bottom") patch = { y: H - h - margin };
+                        else if (align === "center-v")
+                            patch = { y: Math.round((H - h) / 2) };
+                        else if (align === "center")
+                            patch = {
+                                x: Math.round((W - w) / 2),
+                                y: Math.round((H - h) / 2),
+                            };
+                        updateElement(el.id, patch);
+                        flipEntries.push({ id: el.id, oldEl: el, newEl: { ...el, ...patch } });
+                        updates.push({ id: el.id, ...patch });
+                    }
                 }
+
                 scheduleFlipBatch(flipEntries);
                 return { aligned: updates.length, align, updates };
             },
@@ -2043,84 +2630,106 @@ export default function EditorScreen({
                 axis = "vertical",
                 spacing = null,
                 margin = 0,
+                bounds = null,
+                keepBounds = false,
             } = {}) => {
-                const W = canvasSize.width;
-                const H = canvasSize.height;
+                // bounds: { x, y, width, height } — distribute within this rect
+                //         instead of the full canvas. Useful for distributing
+                //         inside a frame or card area.
+                // keepBounds: true — keep the first and last elements fixed;
+                //         only redistribute the middle ones evenly between them.
+                const W = bounds ? bounds.x + bounds.width  : canvasSize.width;
+                const H = bounds ? bounds.y + bounds.height : canvasSize.height;
+                const startX = bounds ? bounds.x + margin : margin;
+                const startY = bounds ? bounds.y + margin : margin;
                 const targets = elements
                     .filter((e) => (ids.length ? ids.includes(e.id) : true))
                     .sort((a, b) =>
-                        axis === "vertical" ? a.y - b.y : a.x - b.x,
+                        axis === "vertical"
+                            ? (a.y || 0) - (b.y || 0)
+                            : effectiveTextBounds(a).x - effectiveTextBounds(b).x,
                     );
                 if (targets.length < 2)
-                    return {
-                        distributed: 0,
-                        message: "Need at least 2 elements",
-                    };
+                    return { distributed: 0, message: "Need at least 2 elements" };
                 const updates = [];
                 const flipEntries = [];
                 if (axis === "vertical") {
-                    const totalH = targets.reduce(
-                        (s, e) => s + (e.height || 0),
-                        0,
-                    );
+                    const totalH = targets.reduce((s, e) => s + (e.height || 0), 0);
+                    // When spacing is explicit and keepBounds is off, anchor at the group's
+                    // current topmost position so elements don't teleport to y=0.
+                    const groupTop = Math.min(...targets.map((e) => e.y || 0));
+                    const rangeStart = keepBounds ? (targets[0].y || 0) : (spacing !== null ? groupTop : startY);
+                    const rangeEnd   = keepBounds ? (targets[targets.length - 1].y || 0) + (targets[targets.length - 1].height || 0) : H - margin;
                     const gap =
                         spacing !== null
                             ? spacing
-                            : Math.max(
-                                  0,
-                                  (H - margin * 2 - totalH) /
-                                      (targets.length - 1),
-                              );
-                    let y = margin;
-                    for (const el of targets) {
-                        const patch = { y: Math.round(y) };
+                            : Math.max(0, (rangeEnd - rangeStart - totalH) / (targets.length - 1));
+                    let y = rangeStart;
+                    for (const [i, el] of targets.entries()) {
+                        if (keepBounds && (i === 0 || i === targets.length - 1)) {
+                            y = i === 0 ? rangeStart : rangeEnd - (el.height || 0);
+                        }
+                        const ny = Math.max(0, Math.min(Math.round(y), H - (el.height || 0)));
+                        const patch = { y: ny };
                         updateElement(el.id, patch);
-                        flipEntries.push({
-                            id: el.id,
-                            oldEl: el,
-                            newEl: { ...el, ...patch },
-                        });
+                        flipEntries.push({ id: el.id, oldEl: el, newEl: { ...el, ...patch } });
                         updates.push({ id: el.id, ...patch });
                         y += (el.height || 0) + gap;
                     }
                     scheduleFlipBatch(flipEntries);
-                    return {
-                        distributed: targets.length,
-                        axis,
-                        gap: Math.round(gap),
-                        updates,
-                    };
+                    return { distributed: targets.length, axis, gap: Math.round(gap), updates };
                 } else {
-                    const totalW = targets.reduce(
-                        (s, e) => s + (e.width || 0),
-                        0,
-                    );
+                    const totalW = targets.reduce((s, e) => s + (e.width || 0), 0);
+                    // When spacing is explicit and keepBounds is off, anchor at the group's
+                    // current leftmost position so elements don't teleport to x=0.
+                    const targetBounds = targets.map(effectiveTextBounds);
+                    const groupLeft = Math.min(...targetBounds.map((b) => b.x));
+                    const lastBounds = targetBounds[targetBounds.length - 1];
+                    const rangeStart = keepBounds ? targetBounds[0].x : (spacing !== null ? groupLeft : startX);
+                    const rangeEnd = keepBounds ? lastBounds.x + lastBounds.width : W - margin;
+                    // Pre-compute the effective gap: when spacing is explicit, cap it so
+                    // rangeStart + totalW + gap*(n-1) <= W - margin. This prevents the
+                    // accumulation bug where per-element clamping left x advancing past bounds.
+                    const maxFittingGap = targets.length > 1
+                        ? Math.max(0, (W - margin - rangeStart - totalW) / (targets.length - 1))
+                        : 0;
                     const gap =
                         spacing !== null
-                            ? spacing
-                            : Math.max(
-                                  0,
-                                  (W - margin * 2 - totalW) /
-                                      (targets.length - 1),
-                              );
-                    let x = margin;
-                    for (const el of targets) {
-                        const patch = { x: Math.round(x) };
+                            ? Math.min(spacing, maxFittingGap)
+                            : Math.max(0, (rangeEnd - rangeStart - totalW) / (targets.length - 1));
+                    let x = rangeStart;
+                    for (const [i, el] of targets.entries()) {
+                        if (keepBounds && (i === 0 || i === targets.length - 1)) {
+                            x = i === 0 ? rangeStart : rangeEnd - (el.width || 0);
+                        }
+                        const desiredLeft = Math.round(x);
+                        // Safety clamp: ensure no individual element overflows regardless of gap rounding.
+                        const clampedLeft = Math.max(0, Math.min(desiredLeft, W - (el.width || 0)));
+                        const nx = xFromRenderedLeft(el, clampedLeft);
+                        const patch = { x: nx };
                         updateElement(el.id, patch);
-                        flipEntries.push({
-                            id: el.id,
-                            oldEl: el,
-                            newEl: { ...el, ...patch },
-                        });
+                        flipEntries.push({ id: el.id, oldEl: el, newEl: { ...el, ...patch } });
                         updates.push({ id: el.id, ...patch });
                         x += (el.width || 0) + gap;
                     }
                     scheduleFlipBatch(flipEntries);
+                    const overflowIds = targets
+                        .map((el) => {
+                            const after = effectiveTextBounds({ ...el, x: updates.find((u) => u.id === el.id)?.x ?? el.x });
+                            return after.x < 0 || after.x + after.width > W ? el.id : null;
+                        })
+                        .filter(Boolean);
                     return {
                         distributed: targets.length,
                         axis,
                         gap: Math.round(gap),
                         updates,
+                        ...(spacing !== null && gap < spacing
+                            ? { note: `Spacing reduced from ${spacing} to ${Math.round(gap)} to fit all elements within canvas bounds.` }
+                            : {}),
+                        ...(overflowIds.length
+                            ? { overflowIds, overflowWarning: `${overflowIds.length} element(s) overflow after preserving requested spacing.` }
+                            : {}),
                     };
                 }
             },
@@ -2135,20 +2744,24 @@ export default function EditorScreen({
                 const lineH = Math.ceil(fontSize * 1.45);
                 const singleLineW = Math.round(text.length * charW);
                 const effectiveMax = maxWidth || W - 120;
-                const lines = maxWidth ? Math.ceil(singleLineW / maxWidth) : 1;
+                const lines = Math.max(1, Math.ceil(singleLineW / effectiveMax));
                 const estH = lines * lineH;
+                const overflows = singleLineW > effectiveMax;
+                const suggestedFontSize = overflows && text.length > 0
+                    ? Math.floor(effectiveMax / (text.length * 0.56))
+                    : undefined;
                 return {
                     singleLineWidth: singleLineW,
-                    fitsOnOneLine: singleLineW <= effectiveMax,
+                    fitsOnOneLine: !overflows,
                     recommendedWidth: Math.min(singleLineW, effectiveMax),
                     estimatedLines: lines,
                     estimatedHeight: estH,
                     suggestedX: 60,
                     suggestedWidth: effectiveMax,
-                    note:
-                        singleLineW > effectiveMax
-                            ? `Text overflows at fontSize ${fontSize}. Either reduce fontSize or set width=${effectiveMax} and allow wrapping.`
-                            : `Text fits in ${singleLineW}px. Safe to use.`,
+                    ...(overflows && suggestedFontSize !== undefined ? { suggestedFontSize } : {}),
+                    note: overflows
+                        ? `Text overflows at fontSize ${fontSize} (needs ${singleLineW}px, max ${effectiveMax}px). Try fontSize ${suggestedFontSize} to fit on one line, or set width=${effectiveMax} and allow wrapping.`
+                        : `Text fits in ${singleLineW}px. Safe to use.`,
                 };
             },
 
@@ -2158,12 +2771,13 @@ export default function EditorScreen({
                 const H = canvasSize.height;
                 const overflow = elements
                     .map((el) => {
-                        const w = el.width || 0;
-                        const h = el.height || 0;
-                        const oL = el.x < 0 ? -el.x : 0;
-                        const oT = el.y < 0 ? -el.y : 0;
-                        const oR = el.x + w > W ? el.x + w - W : 0;
-                        const oB = el.y + h > H ? el.y + h - H : 0;
+                        // Use effectiveTextBounds so textAnchor="middle" headlines
+                        // aren't false-positives (their x is the center, not the left edge).
+                        const b = effectiveTextBounds(el);
+                        const oL = b.x < 0 ? -b.x : 0;
+                        const oT = b.y < 0 ? -b.y : 0;
+                        const oR = b.x + b.width > W ? b.x + b.width - W : 0;
+                        const oB = b.y + b.height > H ? b.y + b.height - H : 0;
                         if (!oL && !oT && !oR && !oB) return null;
                         return {
                             id: el.id,
@@ -2174,10 +2788,12 @@ export default function EditorScreen({
                                     : undefined,
                             x: el.x,
                             y: el.y,
-                            width: w,
-                            height: h,
-                            right: el.x + w,
-                            bottom: el.y + h,
+                            renderX: b.x,
+                            width: b.width,
+                            height: b.height,
+                            right: b.x + b.width,
+                            bottom: b.y + b.height,
+                            textAnchor: el.textAnchor,
                             overflow: {
                                 left: oL,
                                 top: oT,
@@ -2185,8 +2801,8 @@ export default function EditorScreen({
                                 bottom: oB,
                             },
                             fix: {
-                                x: oL > 0 ? 0 : oR > 0 ? W - w : el.x,
-                                y: oT > 0 ? 0 : oB > 0 ? H - h : el.y,
+                                x: oL > 0 ? (el.textAnchor === 'middle' ? b.width / 2 : 0) : oR > 0 ? (el.textAnchor === 'middle' ? W - b.width / 2 : W - b.width) : el.x,
+                                y: oT > 0 ? 0 : oB > 0 ? H - b.height : el.y,
                             },
                         };
                     })
@@ -2204,47 +2820,94 @@ export default function EditorScreen({
                 };
             },
 
-            constrain_elements: async ({ ids = null, padding = 0 } = {}) => {
+            constrain_elements: async ({ ids = null, padding = 0, ignoreIds = [] } = {}) => {
                 const W = canvasSize.width;
                 const H = canvasSize.height;
-                const targets = ids
-                    ? elements.filter((e) => ids.includes(e.id))
-                    : elements.filter((e) => {
-                          const w = e.width || 0;
-                          const h = e.height || 0;
-                          return (
-                              e.x < padding ||
-                              e.y < padding ||
-                              e.x + w > W - padding ||
-                              e.y + h > H - padding
-                          );
-                      });
                 const updates = [];
-                for (const el of targets) {
-                    const w = el.width || 0;
-                    const h = el.height || 0;
-                    const nx = Math.min(
-                        Math.max(el.x || 0, padding),
-                        Math.max(padding, W - w - padding),
-                    );
-                    const ny = Math.min(
-                        Math.max(el.y || 0, padding),
-                        Math.max(padding, H - h - padding),
-                    );
-                    if (nx !== el.x || ny !== el.y) {
-                        updateElement(el.id, { x: nx, y: ny });
-                        updates.push({
-                            id: el.id,
-                            type: el.type,
-                            from: { x: el.x, y: el.y },
-                            to: { x: nx, y: ny },
-                        });
+                const ignored = new Set(ignoreIds);
+                // Fuzzy thresholds: skip rects that cover essentially the whole canvas
+                // even if they're offset by 1px or slightly oversized / undersized.
+                const isFullCanvasBackground = (el) =>
+                    el?.type === "rect" &&
+                    (el.x || 0) <= 1 &&
+                    (el.y || 0) <= 1 &&
+                    (el.width || 0) >= W - 1 &&
+                    (el.height || 0) >= H - 20;
+                const shouldIgnore = (el) => ignored.has(el.id) || isFullCanvasBackground(el);
+
+                // Compute rendered bounding box for an element, accounting for
+                // textAnchor='middle'/'end' so overflow detection is accurate (Bug C fix).
+                const renderedBounds = (e) => effectiveTextBounds(e);
+
+                // Compute the minimal dx to bring a rendered bounding box within
+                // padded canvas bounds on a single axis. Returns 0 if already inside.
+                // Handles both-sides-overflow gracefully: if the span is wider than the
+                // padded area, falls back to raw canvas bounds so we don't make it worse.
+                const axisDelta = (rMin, rMax, limit, pad) => {
+                    const overLeft  = rMin < pad;
+                    const overRight = rMax > limit - pad;
+                    if (overLeft && !overRight)  return pad - rMin;          // push right
+                    if (overRight && !overLeft)  return (limit - pad) - rMax; // push left (negative)
+                    if (overLeft && overRight) {
+                        // Span wider than padded area — use raw bounds only
+                        if (rMin < 0)      return -rMin;
+                        if (rMax > limit)  return limit - rMax;
+                    }
+                    return 0;
+                };
+
+                if (ids && ids.length) {
+                    // Explicit-IDs mode: check each element independently.
+                    // Each element is only moved if its own rendered bounds overflow
+                    // or fall within 'padding' px of a canvas edge. Safe elements
+                    // that are already within bounds are never touched.
+                    const targets = elements.filter((e) => ids.includes(e.id) && !shouldIgnore(e));
+                    const ignoredIds = ids.filter((id) => {
+                        const el = elements.find((entry) => entry.id === id);
+                        return el && shouldIgnore(el);
+                    });
+                    for (const el of targets) {
+                        const b = renderedBounds(el);
+                        const renderOffsetX = (el.x || 0) - b.x;
+                        const renderOffsetY = (el.y || 0) - b.y;
+                        const dx = axisDelta(b.x, b.x + b.width, W, padding);
+                        const dy = axisDelta(b.y, b.y + b.height, H, padding);
+                        if (dx !== 0 || dy !== 0) {
+                            const nx = b.x + dx + renderOffsetX;
+                            const ny = b.y + dy + renderOffsetY;
+                            updateElement(el.id, { x: nx, y: ny });
+                            updates.push({ id: el.id, type: el.type, from: { x: el.x, y: el.y }, to: { x: nx, y: ny } });
+                        }
+                    }
+                    if (!targets.length) return {
+                        constrained: 0,
+                        updates,
+                        ignoredIds,
+                        canvasSize: { width: W, height: H },
+                    };
+                } else {
+                    const targets = elements.filter((e) => !shouldIgnore(e));
+                    for (const el of targets) {
+                        const b = renderedBounds(el);
+                        const renderOffsetX = (el.x || 0) - b.x;
+                        const renderOffsetY = (el.y || 0) - b.y;
+                        const dx = axisDelta(b.x, b.x + b.width, W, padding);
+                        const dy = axisDelta(b.y, b.y + b.height, H, padding);
+                        if (dx !== 0 || dy !== 0) {
+                            const nx = b.x + dx + renderOffsetX;
+                            const ny = b.y + dy + renderOffsetY;
+                            updateElement(el.id, { x: nx, y: ny });
+                            updates.push({ id: el.id, type: el.type, from: { x: el.x, y: el.y }, to: { x: nx, y: ny } });
+                        }
                     }
                 }
+
                 return {
                     constrained: updates.length,
                     updates,
+                    ignoredIds: elements.filter((el) => shouldIgnore(el)).map((el) => el.id),
                     canvasSize: { width: W, height: H },
+                    message: updates.length === 0 ? "All movable elements are within canvas bounds - nothing moved." : undefined,
                 };
             },
 
@@ -2268,11 +2931,13 @@ export default function EditorScreen({
                 syncCounter(elements);
                 const rectId = freshId("rect");
                 const textId = freshId("text");
-                const textW = Math.max(label.length * fontSize * 0.6, 80);
+                const padding = 16;
+                const maxTextW = Math.max(width - padding * 2, 40);
+                const textH = measureWrappedTextHeight(label, { width: maxTextW, fontSize, textWrap: true, lineHeight: 1.4 });
                 // For textAnchor='middle', el.x is the center anchor x
                 const textAnchorX = x + width / 2;
-                // Vertical centering: SVG baseline = el.y + fontSize; we want center = rect center
-                const textY = y + height / 2 - fontSize / 2;
+                // Vertical centering
+                const textY = y + height / 2 - textH / 2;
                 addElementsAnimated([
                     {
                         type: "rect",
@@ -2298,8 +2963,8 @@ export default function EditorScreen({
                         id: textId,
                         x: textAnchorX,
                         y: textY,
-                        width: textW,
-                        height: fontSize * 1.4,
+                        width: maxTextW,
+                        height: textH,
                         text: label,
                         fontSize,
                         fontWeight,
@@ -2308,6 +2973,7 @@ export default function EditorScreen({
                         fill: fontColor,
                         stroke: "none",
                         strokeWidth: 0,
+                        textWrap: true,
                         opacity,
                         visible: true,
                         locked: false,
@@ -2316,7 +2982,8 @@ export default function EditorScreen({
                         strokeLinecap: "butt",
                     },
                 ]);
-                return { rectId, textId };
+                const groupId = makeGroup([rectId, textId], label || "labeled_rect");
+                return { rectId, textId, groupId };
             },
 
             create_button: async ({
@@ -2339,11 +3006,11 @@ export default function EditorScreen({
                 syncCounter(elements);
                 const rectId = freshId("rect");
                 const textId = freshId("text");
-                const autoW = Math.max(
+                const autoW = Math.round(Math.max(
                     label.length * fontSize * 0.6 + paddingX * 2,
                     80,
-                );
-                const autoH = fontSize + paddingY * 2;
+                ));
+                const autoH = Math.round(fontSize + paddingY * 2);
                 const width = wOpt ?? autoW;
                 const height = hOpt ?? autoH;
                 const textAnchorX = x + width / 2;
@@ -2391,24 +3058,34 @@ export default function EditorScreen({
                         strokeLinecap: "butt",
                     },
                 ]);
-                return { rectId, textId, width, height };
+                const groupId = makeGroup([rectId, textId], label || "button");
+                return { rectId, textId, groupId, width, height };
             },
 
             arrange_row: async ({
                 ids = [],
+                childGroups = null,
                 startX = 0,
                 y = 0,
                 gap = 10,
                 alignment = "center",
             } = {}) => {
-                const targets = ids
-                    .map((id) => elements.find((e) => e.id === id))
+                // Auto-expand group IDs: each group becomes [anchorId, ...childIds].
+                // childGroups overrides this if provided explicitly.
+                function toArrangeGroups(inputIds) {
+                    return inputIds.map(id =>
+                        groups[id] ? groups[id].elementIds : [id]
+                    );
+                }
+                const arrangeGroups = childGroups ?? toArrangeGroups(ids);
+                const anchors = arrangeGroups
+                    .map((g) => elements.find((e) => e.id === g[0]))
                     .filter(Boolean);
-                if (!targets.length) return { arranged: 0 };
-                const maxH = Math.max(...targets.map((e) => e.height || 0));
+                if (!anchors.length) return { arranged: 0 };
+                const maxH = Math.max(...anchors.map((e) => e.height || 0));
                 let curX = startX;
                 const updates = [];
-                for (const el of targets) {
+                for (const [i, el] of anchors.entries()) {
                     const elH = el.height || 0;
                     const elY =
                         alignment === "center"
@@ -2416,8 +3093,19 @@ export default function EditorScreen({
                             : alignment === "bottom"
                               ? y + maxH - elH
                               : y;
+                    const dx = curX - (el.x || 0);
+                    const dy = elY - (el.y || 0);
                     updateElement(el.id, { x: curX, y: elY });
                     updates.push({ id: el.id, x: curX, y: elY });
+                    for (const childId of (arrangeGroups[i] ?? []).slice(1)) {
+                        const child = elements.find((e) => e.id === childId);
+                        if (child) {
+                            const cx = (child.x || 0) + dx;
+                            const cy = (child.y || 0) + dy;
+                            updateElement(childId, { x: cx, y: cy });
+                            updates.push({ id: childId, x: cx, y: cy });
+                        }
+                    }
                     curX += (el.width || 0) + gap;
                 }
                 return {
@@ -2430,19 +3118,26 @@ export default function EditorScreen({
 
             arrange_column: async ({
                 ids = [],
+                childGroups = null,
                 x = 0,
                 startY = 0,
                 gap = 10,
                 alignment = "left",
             } = {}) => {
-                const targets = ids
-                    .map((id) => elements.find((e) => e.id === id))
+                function toArrangeGroups(inputIds) {
+                    return inputIds.map(id =>
+                        groups[id] ? groups[id].elementIds : [id]
+                    );
+                }
+                const arrangeGroups = childGroups ?? toArrangeGroups(ids);
+                const anchors = arrangeGroups
+                    .map((g) => elements.find((e) => e.id === g[0]))
                     .filter(Boolean);
-                if (!targets.length) return { arranged: 0 };
-                const maxW = Math.max(...targets.map((e) => e.width || 0));
+                if (!anchors.length) return { arranged: 0 };
+                const maxW = Math.max(...anchors.map((e) => e.width || 0));
                 let curY = startY;
                 const updates = [];
-                for (const el of targets) {
+                for (const [i, el] of anchors.entries()) {
                     const elW = el.width || 0;
                     const elX =
                         alignment === "center"
@@ -2450,8 +3145,19 @@ export default function EditorScreen({
                             : alignment === "right"
                               ? x + maxW - elW
                               : x;
+                    const dx = elX - (el.x || 0);
+                    const dy = curY - (el.y || 0);
                     updateElement(el.id, { x: elX, y: curY });
                     updates.push({ id: el.id, x: elX, y: curY });
+                    for (const childId of (arrangeGroups[i] ?? []).slice(1)) {
+                        const child = elements.find((e) => e.id === childId);
+                        if (child) {
+                            const cx = (child.x || 0) + dx;
+                            const cy = (child.y || 0) + dy;
+                            updateElement(childId, { x: cx, y: cy });
+                            updates.push({ id: childId, x: cx, y: cy });
+                        }
+                    }
                     curY += (el.height || 0) + gap;
                 }
                 return {
@@ -2464,6 +3170,7 @@ export default function EditorScreen({
 
             arrange_grid: async ({
                 ids = [],
+                childGroups = null,
                 x = 0,
                 y = 0,
                 columns = 3,
@@ -2472,25 +3179,42 @@ export default function EditorScreen({
                 cellWidth,
                 cellHeight,
             } = {}) => {
-                const targets = ids
-                    .map((id) => elements.find((e) => e.id === id))
+                function toArrangeGroups(inputIds) {
+                    return inputIds.map(id =>
+                        groups[id] ? groups[id].elementIds : [id]
+                    );
+                }
+                const arrangeGroups = childGroups ?? toArrangeGroups(ids);
+                const anchors = arrangeGroups
+                    .map((g) => elements.find((e) => e.id === g[0]))
                     .filter(Boolean);
-                if (!targets.length) return { arranged: 0 };
+                if (!anchors.length) return { arranged: 0 };
                 const cw =
-                    cellWidth ?? Math.max(...targets.map((e) => e.width || 0));
+                    cellWidth ?? Math.max(...anchors.map((e) => e.width || 0));
                 const ch =
                     cellHeight ??
-                    Math.max(...targets.map((e) => e.height || 0));
+                    Math.max(...anchors.map((e) => e.height || 0));
                 const updates = [];
-                targets.forEach((el, i) => {
+                anchors.forEach((el, i) => {
                     const col = i % columns;
                     const row = Math.floor(i / columns);
                     const nx = x + col * (cw + colGap);
                     const ny = y + row * (ch + rowGap);
+                    const dx = nx - (el.x || 0);
+                    const dy = ny - (el.y || 0);
                     updateElement(el.id, { x: nx, y: ny });
                     updates.push({ id: el.id, x: nx, y: ny });
+                    for (const childId of (arrangeGroups[i] ?? []).slice(1)) {
+                        const child = elements.find((e) => e.id === childId);
+                        if (child) {
+                            const cx = (child.x || 0) + dx;
+                            const cy = (child.y || 0) + dy;
+                            updateElement(childId, { x: cx, y: cy });
+                            updates.push({ id: childId, x: cx, y: cy });
+                        }
+                    }
                 });
-                const rows = Math.ceil(targets.length / columns);
+                const rows = Math.ceil(anchors.length / columns);
                 return {
                     arranged: updates.length,
                     columns,
@@ -2499,6 +3223,86 @@ export default function EditorScreen({
                     cellHeight: ch,
                     updates,
                 };
+            },
+
+            align_grid: async ({
+                ids = [],
+                x = null,
+                y = null,
+                columns = 3,
+                hSpacing = 12,
+                vSpacing = 12,
+                padding = 0,
+                cellWidth,
+                cellHeight,
+                align = "center",
+                valign = "middle",
+            } = {}) => {
+                const resolvedIds = resolveToElementIds(ids);
+                const targets = resolvedIds
+                    .map((id) => elements.find((e) => e.id === id))
+                    .filter(Boolean);
+                if (!targets.length) return { aligned: 0, updates: [] };
+                const minX = Math.min(...targets.map((e) => e.x || 0));
+                const minY = Math.min(...targets.map((e) => e.y || 0));
+                const startX = x ?? minX;
+                const startY = y ?? minY;
+                const cw = cellWidth ?? Math.max(...targets.map((e) => e.width || 0));
+                const ch = cellHeight ?? Math.max(...targets.map((e) => e.height || 0));
+                const updates = [];
+                targets.forEach((el, i) => {
+                    const col = i % columns;
+                    const row = Math.floor(i / columns);
+                    const cellX = startX + col * (cw + hSpacing);
+                    const cellY = startY + row * (ch + vSpacing);
+                    const w = el.width || 0;
+                    const h = el.height || 0;
+                    const nx = align === "left"
+                        ? cellX + padding
+                        : align === "right"
+                          ? cellX + cw - w - padding
+                          : cellX + (cw - w) / 2;
+                    const ny = valign === "top"
+                        ? cellY + padding
+                        : valign === "bottom"
+                          ? cellY + ch - h - padding
+                          : cellY + (ch - h) / 2;
+                    updateElement(el.id, { x: Math.round(nx), y: Math.round(ny) });
+                    updates.push({ id: el.id, x: Math.round(nx), y: Math.round(ny) });
+                });
+                return {
+                    aligned: updates.length,
+                    columns,
+                    rows: Math.ceil(targets.length / columns),
+                    cellWidth: cw,
+                    cellHeight: ch,
+                    updates,
+                };
+            },
+
+            snap_to_grid: async ({ ids = null, gridSize = 8, snapSize = false } = {}) => {
+                const targets = ids
+                    ? elements.filter((e) => ids.includes(e.id))
+                    : elements;
+                const updates = [];
+                for (const el of targets) {
+                    const nx = Math.round((el.x || 0) / gridSize) * gridSize;
+                    const ny = Math.round((el.y || 0) / gridSize) * gridSize;
+                    const shouldSnapSize = snapSize === true;
+                    const nw = shouldSnapSize && el.width != null ? Math.round((el.width || 0) / gridSize) * gridSize : undefined;
+                    const nh = shouldSnapSize && el.height != null ? Math.round((el.height || 0) / gridSize) * gridSize : undefined;
+                    const changed = nx !== (el.x || 0) || ny !== (el.y || 0) ||
+                        (nw !== undefined && nw !== el.width) ||
+                        (nh !== undefined && nh !== el.height);
+                    if (changed) {
+                        const patch = { x: nx, y: ny };
+                        if (nw !== undefined) patch.width = nw;
+                        if (nh !== undefined) patch.height = nh;
+                        updateElement(el.id, patch);
+                        updates.push({ id: el.id, from: { x: el.x, y: el.y, width: el.width, height: el.height }, to: patch });
+                    }
+                }
+                return { snapped: updates.length, gridSize, updates };
             },
 
             align_to_element: async ({
@@ -2652,8 +3456,9 @@ export default function EditorScreen({
                 return { id, x: col, y: row, anchor };
             },
 
-            stack_center: async ({ ids = [], cx: cxOpt, cy: cyOpt } = {}) => {
-                const targets = ids
+            stack_center: async ({ ids = [], cx: cxOpt, cy: cyOpt, preserveRelative = false } = {}) => {
+                const resolvedIds = resolveToElementIds(ids);
+                const targets = resolvedIds
                     .map((id) => elements.find((e) => e.id === id))
                     .filter(Boolean);
                 if (!targets.length) return { stacked: 0 };
@@ -2666,11 +3471,30 @@ export default function EditorScreen({
                     targets.reduce((s, e) => s + e.y + (e.height || 0) / 2, 0) /
                         targets.length;
                 const updates = [];
-                for (const el of targets) {
-                    const nx = Math.round(avgCx - (el.width || 0) / 2);
-                    const ny = Math.round(avgCy - (el.height || 0) / 2);
-                    updateElement(el.id, { x: nx, y: ny });
-                    updates.push({ id: el.id, x: nx, y: ny });
+                if (preserveRelative) {
+                    // Shift all elements by the same delta (group center → target center)
+                    // so their relative positions are preserved.
+                    const groupMinX = Math.min(...targets.map(e => e.x || 0));
+                    const groupMinY = Math.min(...targets.map(e => e.y || 0));
+                    const groupMaxX = Math.max(...targets.map(e => (e.x || 0) + (e.width || 0)));
+                    const groupMaxY = Math.max(...targets.map(e => (e.y || 0) + (e.height || 0)));
+                    const groupCX = (groupMinX + groupMaxX) / 2;
+                    const groupCY = (groupMinY + groupMaxY) / 2;
+                    const dx = Math.round(avgCx - groupCX);
+                    const dy = Math.round(avgCy - groupCY);
+                    for (const el of targets) {
+                        const nx = (el.x || 0) + dx;
+                        const ny = (el.y || 0) + dy;
+                        updateElement(el.id, { x: nx, y: ny });
+                        updates.push({ id: el.id, x: nx, y: ny });
+                    }
+                } else {
+                    for (const el of targets) {
+                        const nx = Math.round(avgCx - (el.width || 0) / 2);
+                        const ny = Math.round(avgCy - (el.height || 0) / 2);
+                        updateElement(el.id, { x: nx, y: ny });
+                        updates.push({ id: el.id, x: nx, y: ny });
+                    }
                 }
                 return {
                     stacked: updates.length,
@@ -2784,7 +3608,8 @@ export default function EditorScreen({
                         strokeLinecap: "butt",
                     },
                 ]);
-                return { rectId, textId, width, height };
+                const groupId = makeGroup([rectId, textId], label || "badge");
+                return { rectId, textId, groupId, width, height };
             },
 
             create_card: async ({
@@ -2798,6 +3623,7 @@ export default function EditorScreen({
                 bodyFontSize = 13,
                 titleColor = "#111111",
                 bodyColor = "#555555",
+                fontFamily = "sans-serif",
                 fill = "#ffffff",
                 stroke = "#e2e8f0",
                 strokeWidth = 1,
@@ -2807,11 +3633,12 @@ export default function EditorScreen({
                 height: hOpt,
             } = {}) => {
                 syncCounter(elements);
+                const resolvedFontFamily = resolveFontFamily(fontFamily);
                 const cardId = freshId("rect");
                 const titleId = freshId("text");
                 const ids = [cardId, titleId];
-                const titleH = titleFontSize * 1.4;
-                const bodyH = body ? bodyFontSize * 1.4 : 0;
+                const titleH = measureWrappedTextHeight(title, { width: width - padding * 2, fontSize: titleFontSize, textWrap: true, lineHeight: 1.4 });
+                const bodyH = body ? measureWrappedTextHeight(body, { width: width - padding * 2, fontSize: bodyFontSize, textWrap: true, lineHeight: 1.4 }) : 0;
                 const autoH =
                     padding + titleH + (body ? gap + bodyH : 0) + padding;
                 const height = hOpt ?? autoH;
@@ -2846,11 +3673,12 @@ export default function EditorScreen({
                         text: title,
                         fontSize: titleFontSize,
                         fontWeight: titleFontWeight,
-                        fontFamily: "sans-serif",
+                        fontFamily: resolvedFontFamily,
                         textAnchor: "start",
                         fill: titleColor,
                         stroke: "none",
                         strokeWidth: 0,
+                        textWrap: true,
                         opacity: 1,
                         visible: true,
                         locked: false,
@@ -2873,11 +3701,12 @@ export default function EditorScreen({
                         text: body,
                         fontSize: bodyFontSize,
                         fontWeight: "normal",
-                        fontFamily: "sans-serif",
+                        fontFamily: resolvedFontFamily,
                         textAnchor: "start",
                         fill: bodyColor,
                         stroke: "none",
                         strokeWidth: 0,
+                        textWrap: true,
                         opacity: 1,
                         visible: true,
                         locked: false,
@@ -2909,7 +3738,9 @@ export default function EditorScreen({
                 labelColor = "#888888",
                 gap = 6,
                 align = "center",
+                fontFamily = "sans-serif",
             } = {}) => {
+                const resolvedStatFont = resolveFontFamily(fontFamily);
                 syncCounter(elements);
                 const valueId = freshId("text");
                 const labelId = freshId("text");
@@ -2937,7 +3768,7 @@ export default function EditorScreen({
                         text: value,
                         fontSize: valueFontSize,
                         fontWeight: valueFontWeight,
-                        fontFamily: "sans-serif",
+                        fontFamily: resolvedStatFont,
                         textAnchor: anchor,
                         fill: valueColor,
                         stroke: "none",
@@ -2959,10 +3790,10 @@ export default function EditorScreen({
                         text: label,
                         fontSize: labelFontSize,
                         fontWeight: "normal",
-                        fontFamily: "sans-serif",
+                        fontFamily: resolvedStatFont,
                         textAnchor: anchor,
                         fill: labelColor,
-                        stroke: "none",
+
                         strokeWidth: 0,
                         opacity: 1,
                         visible: true,
@@ -2991,7 +3822,9 @@ export default function EditorScreen({
                 showLabel = false,
                 labelFontSize = 11,
                 labelColor = "#555555",
+                fontFamily = "sans-serif",
             } = {}) => {
+                const resolvedBarFont = resolveFontFamily(fontFamily);
                 syncCounter(elements);
                 const trackId = freshId("rect");
                 const fillId = freshId("rect");
@@ -3051,7 +3884,7 @@ export default function EditorScreen({
                         text: lbl,
                         fontSize: labelFontSize,
                         fontWeight: "normal",
-                        fontFamily: "sans-serif",
+                        fontFamily: resolvedBarFont,
                         textAnchor: "start",
                         fill: labelColor,
                         stroke: "none",
@@ -3086,6 +3919,7 @@ export default function EditorScreen({
                 nameFontSize = 12,
                 nameColor = "#333333",
                 gap = 6,
+                fontFamily = "sans-serif",
             } = {}) => {
                 syncCounter(elements);
                 const circleId = freshId("circle");
@@ -3144,7 +3978,7 @@ export default function EditorScreen({
                         text: initials,
                         fontSize: fs,
                         fontWeight: "600",
-                        fontFamily: "sans-serif",
+                        fontFamily,
                         textAnchor: "middle",
                         fill: "#ffffff",
                         stroke: "none",
@@ -3161,17 +3995,18 @@ export default function EditorScreen({
                 if (name) {
                     labelId = freshId("text");
                     ids.push(labelId);
+                    const labelW = Math.max(size, name.length * nameFontSize * 0.62);
                     elems.push({
                         type: "text",
                         id: labelId,
                         x: x + size / 2,
                         y: y + size + gap,
-                        width: size,
+                        width: labelW,
                         height: nameFontSize * 1.4,
                         text: name,
                         fontSize: nameFontSize,
                         fontWeight: "normal",
-                        fontFamily: "sans-serif",
+                        fontFamily,
                         textAnchor: "middle",
                         fill: nameColor,
                         stroke: "none",
@@ -3199,10 +4034,12 @@ export default function EditorScreen({
                 subtitleFontSize = 14,
                 titleColor = "#111111",
                 subtitleColor = "#666666",
+                fontFamily = "sans-serif",
                 gap = 8,
                 align = "left",
             } = {}) => {
                 syncCounter(elements);
+                const resolvedFontFamily = resolveFontFamily(fontFamily);
                 const titleId = freshId("text");
                 const anchor =
                     align === "center"
@@ -3216,7 +4053,7 @@ export default function EditorScreen({
                         : align === "right"
                           ? x + width
                           : x;
-                const titleH = titleFontSize * 1.3;
+                const titleH = measureWrappedTextHeight(title, { width, fontSize: titleFontSize, textWrap: true, lineHeight: 1.3 });
                 const elems = [
                     {
                         type: "text",
@@ -3228,11 +4065,12 @@ export default function EditorScreen({
                         text: title,
                         fontSize: titleFontSize,
                         fontWeight: titleFontWeight,
-                        fontFamily: "sans-serif",
+                        fontFamily: resolvedFontFamily,
                         textAnchor: anchor,
                         fill: titleColor,
                         stroke: "none",
                         strokeWidth: 0,
+                        textWrap: true,
                         opacity: 1,
                         visible: true,
                         locked: false,
@@ -3250,15 +4088,16 @@ export default function EditorScreen({
                         x: anchorX,
                         y: y + titleH + gap,
                         width,
-                        height: subtitleFontSize * 1.4,
+                        height: measureWrappedTextHeight(subtitle, { width, fontSize: subtitleFontSize, textWrap: true, lineHeight: 1.4 }),
                         text: subtitle,
                         fontSize: subtitleFontSize,
                         fontWeight: "normal",
-                        fontFamily: "sans-serif",
+                        fontFamily: resolvedFontFamily,
                         textAnchor: anchor,
                         fill: subtitleColor,
                         stroke: "none",
                         strokeWidth: 0,
+                        textWrap: true,
                         opacity: 1,
                         visible: true,
                         locked: false,
@@ -3294,11 +4133,14 @@ export default function EditorScreen({
                 rx = 10,
                 padding = 14,
                 gap = 6,
+                fontFamily = "sans-serif",
             } = {}) => {
+                const resolvedImageCardFont = resolveFontFamily(fontFamily);
                 syncCounter(elements);
                 const imageHeight = imgH ?? Math.round(width * 0.6);
-                const titleH = titleFontSize * 1.4;
-                const subH = subtitle ? subtitleFontSize * 1.4 : 0;
+                const contentW = width - padding * 2;
+                const titleH = measureWrappedTextHeight(title, { width: contentW, fontSize: titleFontSize, textWrap: true, lineHeight: 1.4 });
+                const subH = subtitle ? measureWrappedTextHeight(subtitle, { width: contentW, fontSize: subtitleFontSize, textWrap: true, lineHeight: 1.4 }) : 0;
                 const textAreaH =
                     padding + titleH + (subtitle ? gap + subH : 0) + padding;
                 const totalH = imageHeight + textAreaH;
@@ -3356,11 +4198,11 @@ export default function EditorScreen({
                     text: title,
                     fontSize: titleFontSize,
                     fontWeight: "600",
-                    fontFamily: "sans-serif",
+                    fontFamily: resolvedImageCardFont,
                     textAnchor: "start",
                     fill: titleColor,
-                    stroke: "none",
                     strokeWidth: 0,
+                    textWrap: true,
                     opacity: 1,
                     visible: true,
                     locked: false,
@@ -3381,11 +4223,11 @@ export default function EditorScreen({
                         text: subtitle,
                         fontSize: subtitleFontSize,
                         fontWeight: "normal",
-                        fontFamily: "sans-serif",
+                        fontFamily: resolvedImageCardFont,
                         textAnchor: "start",
                         fill: subtitleColor,
-                        stroke: "none",
                         strokeWidth: 0,
+                        textWrap: true,
                         opacity: 1,
                         visible: true,
                         locked: false,
@@ -3417,12 +4259,16 @@ export default function EditorScreen({
                 padding = 14,
                 rx = 6,
                 height: hOpt,
+                fontFamily = "sans-serif",
             } = {}) => {
+                const resolvedCalloutFont = resolveFontFamily(fontFamily);
                 syncCounter(elements);
                 const barId = freshId("rect");
                 const bgId = freshId("rect");
                 const textId = freshId("text");
-                const autoH = fontSize * 1.5 + padding * 2;
+                const contentW = width - barWidth - padding * 2;
+                const textH = measureWrappedTextHeight(text, { width: contentW, fontSize, textWrap: true, lineHeight: 1.4 });
+                const autoH = textH + padding * 2;
                 const height = hOpt ?? autoH;
                 const bgFill = accentColor + "18";
                 addElementsAnimated([
@@ -3468,17 +4314,18 @@ export default function EditorScreen({
                         type: "text",
                         id: textId,
                         x: x + barWidth + padding,
-                        y: y + height / 2 - fontSize / 2,
-                        width: width - barWidth - padding * 2,
-                        height: fontSize * 1.4,
+                        y: y + height / 2 - textH / 2,
+                        width: contentW,
+                        height: textH,
                         text,
                         fontSize,
                         fontWeight: "normal",
-                        fontFamily: "sans-serif",
+                        fontFamily: resolvedCalloutFont,
                         textAnchor: "start",
                         fill: fontColor,
                         stroke: "none",
                         strokeWidth: 0,
+                        textWrap: true,
                         opacity: 1,
                         visible: true,
                         locked: false,
@@ -3487,7 +4334,8 @@ export default function EditorScreen({
                         strokeLinecap: "butt",
                     },
                 ]);
-                return { barId, bgId, textId, width, height };
+                const groupId = makeGroup([bgId, barId, textId].filter(Boolean), "stat_block");
+                return { barId, bgId, textId, groupId, width, height };
             },
 
             create_input_field: async ({
@@ -3506,7 +4354,9 @@ export default function EditorScreen({
                 strokeWidth = 1,
                 rx = 6,
                 gap = 6,
+                fontFamily = "sans-serif",
             } = {}) => {
+                const resolvedInputFont = resolveFontFamily(fontFamily);
                 syncCounter(elements);
                 const labelId = freshId("text");
                 const inputId = freshId("rect");
@@ -3523,7 +4373,7 @@ export default function EditorScreen({
                         text: label,
                         fontSize: labelFontSize,
                         fontWeight: "500",
-                        fontFamily: "sans-serif",
+                        fontFamily: resolvedInputFont,
                         textAnchor: "start",
                         fill: labelColor,
                         stroke: "none",
@@ -3569,7 +4419,7 @@ export default function EditorScreen({
                         text: placeholder,
                         fontSize: pl,
                         fontWeight: "normal",
-                        fontFamily: "sans-serif",
+                        fontFamily: resolvedInputFont,
                         textAnchor: "start",
                         fill: placeholderColor,
                         stroke: "none",
@@ -3607,7 +4457,9 @@ export default function EditorScreen({
                 gap = 8,
                 textWrap = true,
                 textWidth,
+                fontFamily = "sans-serif",
             } = {}) => {
+                const resolvedIconTextFont = resolveFontFamily(fontFamily);
                 syncCounter(elements);
                 const iconId = freshId(iconSrc ? "image" : "rect");
                 const textId = freshId("text");
@@ -3625,6 +4477,8 @@ export default function EditorScreen({
                 let iconEl, textEl;
                 if (layout === "horizontal") {
                     const centerY = y + iconSize / 2;
+                    // Center the whole text block (not just the first line) against the icon midpoint.
+                    const textBlockStartY = Math.round(centerY - textH / 2);
                     iconEl = iconSrc
                         ? {
                               type: "image",
@@ -3670,14 +4524,14 @@ export default function EditorScreen({
                         type: "text",
                         id: textId,
                         x: x + iconSize + gap,
-                        y: centerY - fontSize / 2,
+                        y: textBlockStartY,
                         width: textW,
                         height: textH,
                         text: normalizedText,
                         fontSize,
                         lineHeight: 1.2,
                         fontWeight,
-                        fontFamily: "sans-serif",
+                        fontFamily: resolvedIconTextFont,
                         textAnchor: "start",
                         textWrap,
                         fill: fontColor,
@@ -3759,7 +4613,8 @@ export default function EditorScreen({
                     };
                 }
                 addElementsAnimated([iconEl, textEl]);
-                return { iconId, textId };
+                const groupId = makeGroup([iconId, textId], "icon_text");
+                return { iconId, textId, groupId };
             },
 
             create_divider: async ({
@@ -3773,7 +4628,9 @@ export default function EditorScreen({
                 labelFontSize = 11,
                 labelColor = "#94a3b8",
                 labelBg = "#ffffff",
+                fontFamily = "sans-serif",
             } = {}) => {
+                const resolvedDividerFont = resolveFontFamily(fontFamily);
                 syncCounter(elements);
                 const lineId = freshId("line");
                 const x2 = orientation === "horizontal" ? x + length : x;
@@ -3841,7 +4698,7 @@ export default function EditorScreen({
                             text: label,
                             fontSize: labelFontSize,
                             fontWeight: "normal",
-                            fontFamily: "sans-serif",
+                            fontFamily: resolvedDividerFont,
                             textAnchor: "middle",
                             fill: labelColor,
                             stroke: "none",
@@ -3871,7 +4728,9 @@ export default function EditorScreen({
                 fontSize = 13,
                 fontWeight = "normal",
                 fontColor = "#1e293b",
+                fontFamily = "sans-serif",
             } = {}) => {
+                const resolvedTableRowFont = resolveFontFamily(fontFamily);
                 syncCounter(elements);
                 if (!cells.length) return { rowId: null, cellIds: [] };
                 const cellW = width / cells.length;
@@ -3902,18 +4761,22 @@ export default function EditorScreen({
                     const cellX = x + i * cellW;
                     const textId = freshId("text");
                     cellIds.push(textId);
-                    const textW = Math.max(cell.length * fontSize * 0.6, 40);
+                    const padding = 16;
+                    const maxTextW = cellW - padding;
+                    const estW = cell.length * fontSize * 0.6;
+                    const finalFontSize = estW > maxTextW ? Math.max(Math.floor(fontSize * (maxTextW / estW)), 8) : fontSize;
+                    const textW = Math.max(cell.length * finalFontSize * 0.6, 40);
                     elems.push({
                         type: "text",
                         id: textId,
                         x: cellX + cellW / 2,
-                        y: y + rowH / 2 - fontSize / 2,
-                        width: textW,
-                        height: fontSize * 1.4,
+                        y: y + rowH / 2 - finalFontSize / 2,
+                        width: Math.min(textW, maxTextW),
+                        height: finalFontSize * 1.4,
                         text: cell,
-                        fontSize,
+                        fontSize: finalFontSize,
                         fontWeight,
-                        fontFamily: "sans-serif",
+                        fontFamily: resolvedTableRowFont,
                         textAnchor: "middle",
                         fill: fontColor,
                         stroke: "none",
@@ -3950,6 +4813,393 @@ export default function EditorScreen({
                 return { rowId, cellIds, cellWidth: cellW, height: rowH };
             },
 
+            create_table: async ({
+                x = 0,
+                y = 0,
+                width = 600,
+                headers = [],
+                rows = [],
+                rowHeight = 40,
+                headerFill = "#1e293b",
+                headerColor = "#ffffff",
+                rowFill = "#ffffff",
+                altRowFill = "#f8fafc",
+                rowColor = "#1e293b",
+                borderColor = "#e2e8f0",
+                fontSize = 13,
+                headerFontSize,
+                fontFamily = "sans-serif",
+                rx = 0,
+            } = {}) => {
+                syncCounter(elements);
+                if (!headers.length) throw new Error("headers array is required");
+                const allIds = [];
+                const headerRowId = freshId("rect");
+                const cellW = width / headers.length;
+
+                // Helper to build one row's elements
+                function buildRow(cells, rowY, fill, fontColor, fSize, fontWeight = "normal", isHeader = false) {
+                    const bgId = isHeader ? headerRowId : freshId("rect");
+                    const rowEls = [
+                        {
+                            type: "rect", id: bgId, x, y: rowY, width, height: rowHeight,
+                            fill, stroke: borderColor, strokeWidth: 1,
+                            rx: isHeader ? rx : 0, ry: isHeader ? rx : 0,
+                            opacity: 1, visible: true, locked: false, description: "",
+                            strokeDash: "solid", strokeLinecap: "butt",
+                        },
+                    ];
+                    cells.forEach((cell, i) => {
+                        const cellX = x + i * cellW;
+                        const textId = freshId("text");
+                        allIds.push(textId);
+                        rowEls.push({
+                            type: "text", id: textId,
+                            x: cellX + cellW / 2,
+                            y: rowY + rowHeight / 2 - fSize / 2,
+                            width: Math.max(String(cell).length * fSize * 0.6, 40),
+                            height: fSize * 1.4,
+                            text: String(cell), fontSize: fSize, fontWeight, fontFamily,
+                            textAnchor: "middle", fill: fontColor,
+                            stroke: "none", strokeWidth: 0, opacity: 1,
+                            visible: true, locked: false, description: "",
+                            strokeDash: "solid", strokeLinecap: "butt",
+                        });
+                        if (i > 0) {
+                            const sepId = freshId("line");
+                            rowEls.push({
+                                type: "line", id: sepId,
+                                x: cellX, y: rowY, width: 0, height: rowHeight,
+                                fill: "none", stroke: borderColor, strokeWidth: 1,
+                                opacity: 1, visible: true, locked: false, description: "",
+                                strokeDash: "solid", strokeLinecap: "butt",
+                            });
+                        }
+                    });
+                    return { bgId, rowEls };
+                }
+
+                const hFS = headerFontSize || fontSize;
+                const { bgId: hBgId, rowEls: headerEls } = buildRow(headers, y, headerFill, headerColor, hFS, "700", true);
+                allIds.push(hBgId);
+
+                const dataRowIds = [];
+                const dataEls = [];
+                rows.forEach((row, ri) => {
+                    const rowY = y + rowHeight * (ri + 1);
+                    const fill = ri % 2 === 0 ? rowFill : (altRowFill || rowFill);
+                    const { bgId: rBgId, rowEls } = buildRow(row, rowY, fill, rowColor, fontSize);
+                    dataRowIds.push(rBgId);
+                    allIds.push(rBgId);
+                    dataEls.push(...rowEls);
+                });
+
+                const allElems = [...headerEls, ...dataEls];
+                addElementsAnimated(allElems);
+                const groupId = makeGroup(allIds, "table");
+                return {
+                    groupId,
+                    headerRowId: hBgId,
+                    dataRowIds,
+                    totalHeight: rowHeight * (rows.length + 1),
+                    rows: rows.length,
+                    columns: headers.length,
+                };
+            },
+
+            create_navbar: async ({
+                x = 0,
+                y = 0,
+                width = canvasSize.width,
+                height = 64,
+                logo = "Brand",
+                links = [],
+                cta,
+                ctaLabel,
+                bg = "#ffffff",
+                textColor = "#111827",
+                mutedColor = "#475569",
+                accentColor = "#0d65d9",
+                fontFamily = "sans-serif",
+                paddingX = 32,
+            } = {}) => {
+                syncCounter(elements);
+                const bgId = freshId("rect");
+                const logoId = freshId("text");
+                const elems = [
+                    makeRectElement({ id: bgId, x, y, width, height, fill: bg, stroke: "#e2e8f0", strokeWidth: 1 }),
+                    makeTextElement({
+                        id: logoId, x: x + paddingX, y: y + height / 2 - 10,
+                        width: Math.max(logo.length * 12, 80), height: 24,
+                        text: logo, fontSize: 18, fontWeight: "700",
+                        fontFamily, fill: textColor,
+                    }),
+                ];
+                const linkIds = [];
+                const ctaText = ctaLabel || cta;
+                const ctaW = ctaText ? Math.max(ctaText.length * 8 + 32, 104) : 0;
+                let cursorX = x + width - paddingX - ctaW;
+                let ctaId, ctaTextId;
+                if (ctaText) {
+                    cursorX -= 20;
+                    ctaId = freshId("rect");
+                    ctaTextId = freshId("text");
+                    elems.push(
+                        makeRectElement({ id: ctaId, x: x + width - paddingX - ctaW, y: y + (height - 36) / 2, width: ctaW, height: 36, fill: accentColor, rx: 8 }),
+                        makeTextElement({
+                            id: ctaTextId, x: x + width - paddingX - ctaW / 2, y: y + height / 2 - 8,
+                            width: ctaW, height: 20, text: ctaText, fontSize: 13,
+                            fontWeight: "700", fontFamily, fill: "#ffffff", textAnchor: "middle",
+                        }),
+                    );
+                }
+                const logoW = Math.max(logo.length * 12, 80);
+                const minXForLinks = x + paddingX + logoW + 32;
+                let activeLinks = [...links];
+                let spacing = 28;
+                let totalLinksW = activeLinks.reduce((acc, l) => acc + Math.max(String(l).length * 8, 44), 0);
+                
+                while (activeLinks.length > 0 && cursorX - totalLinksW - (activeLinks.length * 8) < minXForLinks) {
+                    activeLinks.pop();
+                    totalLinksW = activeLinks.reduce((acc, l) => acc + Math.max(String(l).length * 8, 44), 0);
+                }
+                
+                if (activeLinks.length > 0) {
+                    spacing = Math.min(28, Math.max(8, (cursorX - minXForLinks - totalLinksW) / activeLinks.length));
+                }
+
+                [...activeLinks].reverse().forEach((link) => {
+                    const label = String(link);
+                    const w = Math.max(label.length * 8, 44);
+                    cursorX -= w + spacing;
+                    const id = freshId("text");
+                    linkIds.unshift(id);
+                    elems.push(makeTextElement({
+                        id, x: cursorX, y: y + height / 2 - 7,
+                        width: w, height: 18, text: label, fontSize: 13,
+                        fontWeight: "600", fontFamily, fill: mutedColor,
+                    }));
+                });
+                addElementsAnimated(elems);
+                const groupId = makeGroup(elems.map((e) => e.id), "navbar");
+                return { bgId, logoId, linkIds, ...(ctaId ? { ctaId, ctaTextId } : {}), groupId, height };
+            },
+
+            create_hero: async ({
+                x = 0,
+                y = 0,
+                width = canvasSize.width,
+                height = 420,
+                headline = "",
+                subtitle,
+                body,
+                cta,
+                bg = "#f8fafc",
+                imageSrc,
+                imageWidth,
+                accentColor = "#0d65d9",
+                textColor = "#0f172a",
+                bodyColor = "#475569",
+                fontFamily = "sans-serif",
+                padding = 56,
+            } = {}) => {
+                syncCounter(elements);
+                const bgId = freshId("rect");
+                const elems = [makeRectElement({ id: bgId, x, y, width, height, fill: bg })];
+                const contentW = imageSrc ? Math.round(width * 0.52) : width - padding * 2;
+                let cursorY = y + padding;
+                let subtitleId, headlineId, bodyId, ctaId, ctaTextId, imageId;
+                if (subtitle) {
+                    subtitleId = freshId("text");
+                    elems.push(makeTextElement({
+                        id: subtitleId, x: x + padding, y: cursorY,
+                        width: contentW, height: 20, text: subtitle,
+                        fontSize: 13, fontWeight: "700", fontFamily, fill: accentColor,
+                    }));
+                    cursorY += 30;
+                }
+                headlineId = freshId("text");
+                elems.push(makeTextElement({
+                    id: headlineId, x: x + padding, y: cursorY,
+                    width: contentW, text: headline, fontSize: 48,
+                    fontWeight: "800", fontFamily, fill: textColor,
+                    lineHeight: 1.05, textWrap: true,
+                }));
+                cursorY += Math.max(64, measureWrappedTextHeight(headline, { width: contentW, fontSize: 48, lineHeight: 1.05, textWrap: true })) + 18;
+                if (body) {
+                    bodyId = freshId("text");
+                    elems.push(makeTextElement({
+                        id: bodyId, x: x + padding, y: cursorY,
+                        width: Math.min(contentW, 560), text: body,
+                        fontSize: 17, fontWeight: "normal", fontFamily,
+                        fill: bodyColor, lineHeight: 1.45, textWrap: true,
+                    }));
+                    cursorY += measureWrappedTextHeight(body, { width: Math.min(contentW, 560), fontSize: 17, lineHeight: 1.45, textWrap: true }) + 28;
+                }
+                if (cta) {
+                    const ctaW = Math.max(String(cta).length * 8 + 38, 128);
+                    ctaId = freshId("rect");
+                    ctaTextId = freshId("text");
+                    elems.push(
+                        makeRectElement({ id: ctaId, x: x + padding, y: cursorY, width: ctaW, height: 44, fill: accentColor, rx: 8 }),
+                        makeTextElement({
+                            id: ctaTextId, x: x + padding + ctaW / 2, y: cursorY + 12,
+                            width: ctaW, height: 20, text: cta, fontSize: 14,
+                            fontWeight: "700", fontFamily, fill: "#ffffff", textAnchor: "middle",
+                        }),
+                    );
+                }
+                if (imageSrc) {
+                    const iw = imageWidth ?? Math.round(width * 0.34);
+                    imageId = freshId("image");
+                    elems.push(makeImageElement({
+                        id: imageId, x: x + width - padding - iw,
+                        y: y + Math.round((height - iw * 0.72) / 2),
+                        width: iw, height: Math.round(iw * 0.72),
+                        href: imageSrc, fill: "#e2e8f0", rx: 14,
+                    }));
+                }
+                addElementsAnimated(elems);
+                const groupId = makeGroup(elems.map((e) => e.id), "hero");
+                return { bgId, headlineId, ...(subtitleId ? { subtitleId } : {}), ...(bodyId ? { bodyId } : {}), ...(ctaId ? { ctaId, ctaTextId } : {}), ...(imageId ? { imageId } : {}), groupId };
+            },
+
+            create_footer: async ({
+                x = 0,
+                y = 0,
+                width = canvasSize.width,
+                columns = [],
+                copyright,
+                bg = "#0f172a",
+                dividerColor = "#334155",
+                textColor = "#e2e8f0",
+                mutedColor = "#94a3b8",
+                fontFamily = "sans-serif",
+                padding = 40,
+                columnGap = 48,
+            } = {}) => {
+                syncCounter(elements);
+                const maxLinks = Math.max(1, ...columns.map((c) => c.links?.length || 0));
+                const height = padding * 2 + 24 + maxLinks * 24 + (copyright ? 46 : 0);
+                const bgId = freshId("rect");
+                const dividerId = freshId("line");
+                const elems = [makeRectElement({ id: bgId, x, y, width, height, fill: bg })];
+                const columnTitleIds = [];
+                const columnLinkIds = [];
+                const colW = (width - padding * 2 - columnGap * Math.max(columns.length - 1, 0)) / Math.max(columns.length, 1);
+                columns.forEach((col, i) => {
+                    const colX = x + padding + i * (colW + columnGap);
+                    const titleId = freshId("text");
+                    columnTitleIds.push(titleId);
+                    elems.push(makeTextElement({ id: titleId, x: colX, y: y + padding, width: colW, height: 20, text: col.title || "", fontSize: 14, fontWeight: "700", fontFamily, fill: textColor }));
+                    (col.links || []).forEach((link, li) => {
+                        const id = freshId("text");
+                        columnLinkIds.push(id);
+                        elems.push(makeTextElement({ id, x: colX, y: y + padding + 32 + li * 24, width: colW, height: 18, text: String(link), fontSize: 13, fontFamily, fill: mutedColor }));
+                    });
+                });
+                const dividerY = y + height - (copyright ? 44 : 1);
+                elems.push({ type: "line", id: dividerId, x, y: dividerY, width, height: 0, fill: "none", stroke: dividerColor, strokeWidth: 1, opacity: 1, visible: true, locked: false, description: "", strokeDash: "solid", strokeLinecap: "butt" });
+                let copyrightId;
+                if (copyright) {
+                    copyrightId = freshId("text");
+                    elems.push(makeTextElement({ id: copyrightId, x: x + padding, y: dividerY + 16, width: width - padding * 2, height: 18, text: copyright, fontSize: 12, fontFamily, fill: mutedColor }));
+                }
+                addElementsAnimated(elems);
+                const groupId = makeGroup(elems.map((e) => e.id), "footer");
+                return { bgId, dividerId, columnTitleIds, columnLinkIds, ...(copyrightId ? { copyrightId } : {}), groupId, height };
+            },
+
+            create_pricing_card: async ({
+                x = 0,
+                y = 0,
+                width = 300,
+                plan = "Plan",
+                price = "$0",
+                period = "",
+                features = [],
+                cta = "Get started",
+                popular = false,
+                accentColor = "#0d65d9",
+                fill = "#ffffff",
+                stroke = "#e2e8f0",
+                textColor = "#0f172a",
+                mutedColor = "#64748b",
+                fontFamily = "sans-serif",
+            } = {}) => {
+                syncCounter(elements);
+                const height = 210 + features.length * 28 + (popular ? 28 : 0);
+                const cardId = freshId("rect");
+                const planId = freshId("text");
+                const priceId = freshId("text");
+                const ctaId = freshId("rect");
+                const ctaTextId = freshId("text");
+                const elems = [makeRectElement({ id: cardId, x, y, width, height, fill, stroke, strokeWidth: 1, rx: 10 })];
+                let popularId;
+                let topY = y + 24;
+                if (popular) {
+                    popularId = freshId("text");
+                    elems.push(makeRectElement({ id: freshId("rect"), x: x + width - 106, y: y + 16, width: 82, height: 24, fill: accentColor, rx: 12 }));
+                    elems.push(makeTextElement({ id: popularId, x: x + width - 65, y: y + 21, width: 80, height: 14, text: "Popular", fontSize: 10, fontWeight: "700", fontFamily, fill: "#ffffff", textAnchor: "middle" }));
+                    topY += 8;
+                }
+                elems.push(
+                    makeTextElement({ id: planId, x: x + 24, y: topY, width: width - 48, height: 22, text: plan, fontSize: 16, fontWeight: "700", fontFamily, fill: textColor }),
+                    makeTextElement({ id: priceId, x: x + 24, y: topY + 34, width: width - 48, height: 46, text: `${price}${period}`, fontSize: 34, fontWeight: "800", fontFamily, fill: textColor }),
+                );
+                const featureIds = [];
+                features.forEach((feature, i) => {
+                    const id = freshId("text");
+                    featureIds.push(id);
+                    elems.push(makeTextElement({ id, x: x + 28, y: topY + 96 + i * 28, width: width - 56, height: 18, text: `✓ ${feature}`, fontSize: 13, fontFamily, fill: mutedColor }));
+                });
+                const ctaY = y + height - 62;
+                elems.push(
+                    makeRectElement({ id: ctaId, x: x + 24, y: ctaY, width: width - 48, height: 42, fill: accentColor, rx: 8 }),
+                    makeTextElement({ id: ctaTextId, x: x + width / 2, y: ctaY + 12, width: width - 48, height: 18, text: cta, fontSize: 14, fontWeight: "700", fontFamily, fill: "#ffffff", textAnchor: "middle" }),
+                );
+                addElementsAnimated(elems);
+                const groupId = makeGroup(elems.map((e) => e.id), "pricing_card");
+                return { cardId, planId, priceId, featureIds, ctaId, ctaTextId, ...(popularId ? { popularId } : {}), groupId, height };
+            },
+
+            create_icon_grid: async ({
+                x = 0,
+                y = 0,
+                columns = 3,
+                items = [],
+                iconFill = "#0d65d9",
+                spacing = 24,
+                rowSpacing = 36,
+                cellWidth = 220,
+                iconSize = 40,
+                titleColor = "#0f172a",
+                descColor = "#64748b",
+                fontFamily = "sans-serif",
+            } = {}) => {
+                syncCounter(elements);
+                const elems = [];
+                const itemGroups = [];
+                items.forEach((item, i) => {
+                    const col = i % columns;
+                    const row = Math.floor(i / columns);
+                    const cellX = x + col * (cellWidth + spacing);
+                    const cellY = y + row * (iconSize + 82 + rowSpacing);
+                    const iconId = freshId(item.icon ? "image" : "rect");
+                    const titleId = freshId("text");
+                    const descId = item.desc ? freshId("text") : null;
+                    elems.push(item.icon
+                        ? makeImageElement({ id: iconId, x: cellX, y: cellY, width: iconSize, height: iconSize, href: item.icon, fill: iconFill, rx: 8 })
+                        : makeRectElement({ id: iconId, x: cellX, y: cellY, width: iconSize, height: iconSize, fill: iconFill, rx: 8 }));
+                    elems.push(makeTextElement({ id: titleId, x: cellX, y: cellY + iconSize + 14, width: cellWidth, height: 20, text: item.title || "", fontSize: 15, fontWeight: "700", fontFamily, fill: titleColor }));
+                    if (descId) elems.push(makeTextElement({ id: descId, x: cellX, y: cellY + iconSize + 40, width: cellWidth, text: item.desc, fontSize: 12, fontFamily, fill: descColor, lineHeight: 1.35 }));
+                    itemGroups.push({ iconId, titleId, ...(descId ? { descId } : {}) });
+                });
+                addElementsAnimated(elems);
+                const groupId = makeGroup(elems.map((e) => e.id), "icon_grid");
+                return { items: itemGroups, groupId, count: itemGroups.length };
+            },
+
             create_list: async ({
                 x = 0,
                 y = 0,
@@ -3979,7 +5229,12 @@ export default function EditorScreen({
                 const prefix = bullets[bulletType] ?? "• ";
                 const elems = [];
                 let bgId;
-                const totalH = padding * 2 + items.length * lh;
+                const totalH = padding * 2 + items.reduce((acc, item, i) => {
+                    const prefix = bulletType === "number" ? `${i + 1}. ` : bullets[bulletType] ?? "• ";
+                    const itemW = width - (fill ? padding * 2 : 0) - indentX;
+                    const textH = measureWrappedTextHeight(`${prefix}${item}`, { width: itemW, fontSize, textWrap: true, lineHeight: 1.4 });
+                    return acc + Math.max(lhOpt ?? Math.round(fontSize * 1.8), textH);
+                }, 0);
                 if (fill) {
                     bgId = freshId("rect");
                     elems.push({
@@ -4002,38 +5257,57 @@ export default function EditorScreen({
                         strokeLinecap: "butt",
                     });
                 }
+                let currentY = y + (fill ? padding : 0);
                 const itemIds = items.map((item, i) => {
                     const id = freshId("text");
                     const itemPrefix =
                         bulletType === "number" ? `${i + 1}. ` : prefix;
                     const bColor = bulletColor || textColor;
+                    const splitBullet = bulletType !== "none" && bulletColor && bulletColor !== textColor;
                     const textX = x + (fill ? padding : 0) + indentX;
-                    const itemY = y + (fill ? padding : 0) + i * lh;
-                    elems.push({
-                        type: "text",
-                        id,
-                        x: textX,
-                        y: itemY,
-                        width: width - (fill ? padding * 2 : 0) - indentX,
-                        height: fontSize * 1.4,
-                        text: `${itemPrefix}${item}`,
-                        fontSize,
-                        fontWeight,
-                        fontFamily,
+                    const itemW = width - (fill ? padding * 2 : 0) - indentX;
+                    const textH = measureWrappedTextHeight(`${itemPrefix}${item}`, { width: itemW, fontSize, textWrap: true, lineHeight: 1.4 });
+                    const stepH = Math.max(lh, textH);
+                    const itemY = currentY;
+                    currentY += stepH;
+
+                    const baseText = {
+                        fontSize, fontWeight, fontFamily,
                         textAnchor: "start",
-                        fill:
-                            i === 0 && bulletType !== "none"
-                                ? bColor
-                                : textColor,
-                        stroke: "none",
-                        strokeWidth: 0,
-                        opacity: 1,
-                        visible: true,
-                        locked: false,
-                        description: "",
-                        strokeDash: "solid",
-                        strokeLinecap: "butt",
-                    });
+                        stroke: "none", strokeWidth: 0,
+                        textWrap: true,
+                        opacity: 1, visible: true, locked: false, description: "",
+                        strokeDash: "solid", strokeLinecap: "butt",
+                    };
+                    if (splitBullet) {
+                        const bulletId = freshId("text");
+                        const bulletW = Math.ceil(itemPrefix.length * fontSize * 0.56);
+                        elems.push({
+                            ...baseText,
+                            type: "text", id: bulletId,
+                            x: textX, y: itemY,
+                            width: bulletW, height: textH,
+                            text: itemPrefix.trimEnd(),
+                            fill: bColor,
+                        });
+                        elems.push({
+                            ...baseText,
+                            type: "text", id,
+                            x: textX + bulletW, y: itemY,
+                            width: Math.max(itemW - bulletW, 40), height: textH,
+                            text: item,
+                            fill: textColor,
+                        });
+                    } else {
+                        elems.push({
+                            ...baseText,
+                            type: "text", id,
+                            x: textX, y: itemY,
+                            width: itemW, height: textH,
+                            text: `${itemPrefix}${item}`,
+                            fill: textColor,
+                        });
+                    }
                     return id;
                 });
                 addElementsAnimated(elems);
@@ -4053,29 +5327,39 @@ export default function EditorScreen({
                 textColor = "#334155",
                 fontSize = 11,
                 fontWeight = "600",
+                fontFamily = "sans-serif",
                 rx: rxOpt,
                 paddingX = 10,
                 paddingY = 4,
+                maxWidth,
             } = {}) => {
                 syncCounter(elements);
+                const resolvedFontFamily = resolveFontFamily(fontFamily);
                 const height = fontSize + paddingY * 2;
                 const rxVal = rxOpt ?? height / 2;
                 const elems = [];
                 const ids = [];
+                const mxWidth = maxWidth ?? (canvasSize.width - x - 20);
                 let curX = x;
+                let curY = y;
+                let maxW = 0;
                 tags.forEach((tag) => {
                     const w = Math.max(
                         tag.length * fontSize * 0.62 + paddingX * 2,
                         30,
                     );
+                    if (curX + w > x + mxWidth && curX !== x) {
+                        curX = x;
+                        curY += height + spacing;
+                    }
                     const rectId = freshId("rect");
                     const textId = freshId("text");
-                    const textY = y + height / 2 - fontSize / 2;
+                    const textY = curY + height / 2 - fontSize / 2;
                     elems.push({
                         type: "rect",
                         id: rectId,
                         x: curX,
-                        y,
+                        y: curY,
                         width: w,
                         height,
                         fill,
@@ -4100,7 +5384,7 @@ export default function EditorScreen({
                         text: tag,
                         fontSize,
                         fontWeight,
-                        fontFamily: "sans-serif",
+                        fontFamily: resolvedFontFamily,
                         textAnchor: "middle",
                         fill: textColor,
                         stroke: "none",
@@ -4114,9 +5398,10 @@ export default function EditorScreen({
                     });
                     ids.push({ rectId, textId });
                     curX += w + spacing;
+                    maxW = Math.max(maxW, curX - x - spacing);
                 });
                 addElementsAnimated(elems);
-                return { ids, totalWidth: curX - x - spacing, height };
+                return { ids, totalWidth: maxW, height: curY - y + height };
             },
 
             create_timeline: async ({
@@ -4134,11 +5419,12 @@ export default function EditorScreen({
                 dateColor = "#94a3b8",
                 itemSpacing = 60,
                 textOffsetX = 24,
+                fontFamily = "sans-serif",
                 width: textWidth = 220,
             } = {}) => {
                 syncCounter(elements);
+                const resolvedFontFamily = resolveFontFamily(fontFamily);
                 if (!items.length) return { lineId: null, items: [] };
-                const totalH = items.length * itemSpacing;
                 const lineId = freshId("line");
                 const elems = [
                     {
@@ -4199,11 +5485,12 @@ export default function EditorScreen({
                         text: item.title,
                         fontSize: titleFontSize,
                         fontWeight: "600",
-                        fontFamily: "sans-serif",
+                        fontFamily: resolvedFontFamily,
                         textAnchor: "start",
                         fill: titleColor,
                         stroke: "none",
                         strokeWidth: 0,
+                        textWrap: true,
                         opacity: 1,
                         visible: true,
                         locked: false,
@@ -4224,11 +5511,12 @@ export default function EditorScreen({
                             text: item.subtitle,
                             fontSize: subtitleFontSize,
                             fontWeight: "normal",
-                            fontFamily: "sans-serif",
+                            fontFamily: resolvedFontFamily,
                             textAnchor: "start",
                             fill: subtitleColor,
                             stroke: "none",
                             strokeWidth: 0,
+                            textWrap: true,
                             opacity: 1,
                             visible: true,
                             locked: false,
@@ -4249,7 +5537,7 @@ export default function EditorScreen({
                             text: item.date,
                             fontSize: dateFontSize,
                             fontWeight: "normal",
-                            fontFamily: "sans-serif",
+                            fontFamily: resolvedFontFamily,
                             textAnchor: "start",
                             fill: dateColor,
                             stroke: "none",
@@ -4286,14 +5574,18 @@ export default function EditorScreen({
                 labelColor = "#64748b",
                 labelFontSize = 12,
                 labelGap = 8,
+                fontFamily = "sans-serif",
             } = {}) => {
+                const resolvedRatingFont = resolveFontFamily(fontFamily);
                 syncCounter(elements);
                 const elems = [];
                 const starIds = [];
-                const filled = Math.round(value);
+                const floorVal = Math.floor(value);
                 for (let i = 0; i < maxStars; i++) {
                     const id = freshId("text");
                     starIds.push(id);
+                    const isFilled = i < floorVal;
+                    const isHalf = !isFilled && i === floorVal && (value % 1) >= 0.5;
                     elems.push({
                         type: "text",
                         id,
@@ -4301,12 +5593,12 @@ export default function EditorScreen({
                         y,
                         width: starSize,
                         height: starSize * 1.2,
-                        text: i < filled ? "★" : "☆",
+                        text: isFilled ? "★" : (isHalf ? "⯨" : "☆"),
                         fontSize: starSize,
                         fontWeight: "normal",
-                        fontFamily: "sans-serif",
+                        fontFamily: resolvedRatingFont,
                         textAnchor: "start",
-                        fill: i < filled ? filledColor : emptyColor,
+                        fill: (isFilled || isHalf) ? filledColor : emptyColor,
                         stroke: "none",
                         strokeWidth: 0,
                         opacity: 1,
@@ -4332,7 +5624,7 @@ export default function EditorScreen({
                         text: `${value} / ${maxStars}`,
                         fontSize: labelFontSize,
                         fontWeight: "normal",
-                        fontFamily: "sans-serif",
+                        fontFamily: resolvedRatingFont,
                         textAnchor: "start",
                         fill: labelColor,
                         stroke: "none",
@@ -4368,11 +5660,13 @@ export default function EditorScreen({
                 originalColor = "#94a3b8",
                 labelFill = "#ef4444",
                 labelTextColor = "#ffffff",
+                fontFamily = "sans-serif",
             } = {}) => {
+                const resolvedPriceFont = resolveFontFamily(fontFamily);
                 syncCounter(elements);
                 const elems = [];
                 let curX = x;
-                let labelId, currencyId, originalId, strikeId;
+                let labelId, labelTextId, currencyId, originalId, strikeId;
                 const cColor = currencyColor || priceColor;
 
                 if (label) {
@@ -4380,7 +5674,7 @@ export default function EditorScreen({
                     const lH = 10 + 8;
                     const lRx = lH / 2;
                     labelId = freshId("rect");
-                    const labelTextId = freshId("text");
+                    labelTextId = freshId("text");
                     elems.push({
                         type: "rect",
                         id: labelId,
@@ -4410,7 +5704,7 @@ export default function EditorScreen({
                         text: label,
                         fontSize: 10,
                         fontWeight: "700",
-                        fontFamily: "sans-serif",
+                        fontFamily: resolvedPriceFont,
                         textAnchor: "middle",
                         fill: labelTextColor,
                         stroke: "none",
@@ -4438,7 +5732,7 @@ export default function EditorScreen({
                         text: currency,
                         fontSize: currencyFontSize,
                         fontWeight: "700",
-                        fontFamily: "sans-serif",
+                        fontFamily: resolvedPriceFont,
                         textAnchor: "start",
                         fill: cColor,
                         stroke: "none",
@@ -4465,7 +5759,7 @@ export default function EditorScreen({
                     text: price,
                     fontSize: priceFontSize,
                     fontWeight: "700",
-                    fontFamily: "sans-serif",
+                    fontFamily: resolvedPriceFont,
                     textAnchor: "start",
                     fill: priceColor,
                     stroke: "none",
@@ -4481,10 +5775,11 @@ export default function EditorScreen({
                 if (originalPrice) {
                     const origX = curX + priceW + 14;
                     originalId = freshId("text");
-                    strikeId = freshId("rect");
+                    strikeId = freshId("line");
                     const origW =
                         originalPrice.length * originalFontSize * 0.6 + 4;
                     const origY = y + (priceFontSize - originalFontSize) * 0.7;
+                    const strikeY = origY + originalFontSize * 0.55;
                     elems.push({
                         type: "text",
                         id: originalId,
@@ -4495,7 +5790,7 @@ export default function EditorScreen({
                         text: originalPrice,
                         fontSize: originalFontSize,
                         fontWeight: "normal",
-                        fontFamily: "sans-serif",
+                        fontFamily: resolvedPriceFont,
                         textAnchor: "start",
                         fill: originalColor,
                         stroke: "none",
@@ -4508,23 +5803,21 @@ export default function EditorScreen({
                         strokeLinecap: "butt",
                     });
                     elems.push({
-                        type: "rect",
+                        type: "line",
                         id: strikeId,
-                        x: origX - 2,
-                        y: origY + originalFontSize * 0.55,
+                        x: origX,
+                        y: strikeY,
                         width: origW,
-                        height: 1.5,
-                        fill: originalColor,
-                        stroke: "none",
-                        strokeWidth: 0,
-                        rx: 0,
-                        ry: 0,
+                        height: 0,
+                        fill: "none",
+                        stroke: originalColor,
+                        strokeWidth: 1.5,
                         opacity: 1,
                         visible: true,
                         locked: false,
                         description: "",
                         strokeDash: "solid",
-                        strokeLinecap: "butt",
+                        strokeLinecap: "round",
                     });
                 }
 
@@ -4533,7 +5826,7 @@ export default function EditorScreen({
                     priceId,
                     ...(currencyId ? { currencyId } : {}),
                     ...(originalId ? { originalId, strikeId } : {}),
-                    ...(labelId ? { labelId } : {}),
+                    ...(labelId ? { labelId, labelTextId } : {}),
                 };
             },
 
@@ -4556,6 +5849,7 @@ export default function EditorScreen({
                 padding = 24,
                 quoteFontSize = 14,
                 avatarSize = 36,
+                fontFamily = "sans-serif",
             } = {}) => {
                 syncCounter(elements);
                 const elems = [];
@@ -4571,6 +5865,15 @@ export default function EditorScreen({
                 const divY = y + padding + quoteMarkH + textH + 12;
                 const avatarY = divY + 12;
                 const totalH = avatarY + avatarSize + padding - y;
+
+                // Bounds check: warn if the component overflows the canvas.
+                if (y + totalH > canvasSize.height) {
+                    const overflow = Math.round(y + totalH - canvasSize.height);
+                    throw new Error(
+                        `create_testimonial would overflow the canvas by ${overflow}px (y:${y} + totalHeight:${Math.round(totalH)} = ${Math.round(y + totalH)}, canvas height: ${canvasSize.height}). ` +
+                        `Move it up by at least ${overflow}px or reduce the quote text length.`
+                    );
+                }
 
                 if (fill) {
                     bgId = freshId("rect");
@@ -4630,7 +5933,7 @@ export default function EditorScreen({
                     text: quote,
                     fontSize: quoteFontSize,
                     fontWeight: "normal",
-                    fontFamily: "sans-serif",
+                    fontFamily,
                     textAnchor: "start",
                     fill: textColor,
                     stroke: "none",
@@ -4701,7 +6004,7 @@ export default function EditorScreen({
                         text: initials,
                         fontSize: 13,
                         fontWeight: "700",
-                        fontFamily: "sans-serif",
+                        fontFamily,
                         textAnchor: "middle",
                         fill: "#ffffff",
                         stroke: "none",
@@ -4727,7 +6030,7 @@ export default function EditorScreen({
                     text: author,
                     fontSize: 13,
                     fontWeight: "700",
-                    fontFamily: "sans-serif",
+                    fontFamily,
                     textAnchor: "start",
                     fill: authorColor,
                     stroke: "none",
@@ -4768,6 +6071,7 @@ export default function EditorScreen({
                 }
 
                 addElementsAnimated(elems);
+                const groupId = makeGroup(elems.map(e => e.id), "testimonial");
                 return {
                     ...(bgId ? { bgId } : {}),
                     quoteMarkId,
@@ -4776,6 +6080,7 @@ export default function EditorScreen({
                     avatarId,
                     authorId,
                     ...(roleId ? { roleId } : {}),
+                    groupId,
                     totalHeight: totalH,
                 };
             },
@@ -4790,14 +6095,16 @@ export default function EditorScreen({
                 bgColor = "#ffffff",
                 fontSize = 11,
                 labelColor = "#64748b",
+                fontFamily = "sans-serif",
             } = {}) => {
+                const resolvedQrFont = resolveFontFamily(fontFamily);
                 syncCounter(elements);
                 const elems = [];
                 const cornerIds = [];
-                const pad = size * 0.08;
-                const finderSize = size * 0.28;
-                const innerSize = finderSize * 0.55;
-                const coreSize = innerSize * 0.55;
+                const pad = Math.round(size * 0.08);
+                const finderSize = Math.round(size * 0.28);
+                const innerSize = Math.round(finderSize * 0.55);
+                const coreSize = Math.round(innerSize * 0.55);
 
                 // Background
                 const frameId = freshId("rect");
@@ -4832,8 +6139,8 @@ export default function EditorScreen({
                     const innerId = freshId("rect");
                     const coreId = freshId("rect");
                     cornerIds.push(outerId);
-                    const innerOff = (finderSize - innerSize) / 2;
-                    const coreOff = (finderSize - coreSize) / 2;
+                    const innerOff = Math.round((finderSize - innerSize) / 2);
+                    const coreOff = Math.round((finderSize - coreSize) / 2);
                     elems.push({
                         type: "rect",
                         id: outerId,
@@ -4911,7 +6218,7 @@ export default function EditorScreen({
                         text: displayLabel,
                         fontSize,
                         fontWeight: "normal",
-                        fontFamily: "sans-serif",
+                        fontFamily: resolvedQrFont,
                         textAnchor: "middle",
                         fill: labelColor,
                         stroke: "none",
@@ -4935,10 +6242,13 @@ export default function EditorScreen({
             },
 
             // ── Font loading ──────────────────────────────────────────────────────
-            load_font: async ({ fontFamily, ids = [] } = {}) => {
+            load_font: async ({ fontFamily, ids = [], applyToAll = false } = {}) => {
                 if (!fontFamily) throw new Error("fontFamily is required");
                 addFont({ type: "google", name: fontFamily });
-                if (ids.length) updateElements(ids, { fontFamily });
+                const applyIds = applyToAll
+                    ? elements.filter((e) => e.type === "text").map((e) => e.id)
+                    : ids;
+                if (applyIds.length) updateElements(applyIds, { fontFamily });
                 try {
                     await document.fonts.load(`20px "${fontFamily}"`);
                 } catch {}
@@ -4963,14 +6273,26 @@ export default function EditorScreen({
                     </span>,
                     { duration: 3000, position: "bottom-center" },
                 );
-                return { loaded: fontFamily, applied_to: ids };
+                return { loaded: fontFamily, applied_to: applyIds };
             },
 
             // ── Canvas resize ─────────────────────────────────────────────────────
-            resize_canvas: async ({ width, height } = {}) => {
+            resize_canvas: async ({ width, height, constrain = false } = {}) => {
                 if (!width || !height)
                     throw new Error("width and height are required");
                 onCanvasResize?.({ width, height });
+                if (constrain) {
+                    const overflowing = elements.filter((e) => {
+                        const w = e.width || 0; const h = e.height || 0;
+                        return (e.x || 0) + w > width || (e.y || 0) + h > height || (e.x || 0) < 0 || (e.y || 0) < 0;
+                    });
+                    for (const el of overflowing) {
+                        const nx = Math.min(Math.max(el.x || 0, 0), Math.max(0, width - (el.width || 0)));
+                        const ny = Math.min(Math.max(el.y || 0, 0), Math.max(0, height - (el.height || 0)));
+                        updateElement(el.id, { x: nx, y: ny });
+                    }
+                    return { width, height, constrained: overflowing.length };
+                }
                 return { width, height };
             },
 
@@ -4978,6 +6300,17 @@ export default function EditorScreen({
             insert_svg: async ({ svg, placement = "center" } = {}) => {
                 if (!svg) throw new Error("SVG markup required");
                 const { elements: parsed } = parseSVGToElements(svg);
+                if (!parsed || parsed.length === 0) {
+                    const hasRoot = /<svg[\s>]/i.test(svg);
+                    throw new Error(
+                        !hasRoot
+                            ? 'SVG parsing produced no elements. The input has no <svg> root element. ' +
+                              'Wrap your markup in: <svg xmlns="http://www.w3.org/2000/svg" width="W" height="H">...</svg>'
+                            : "SVG parsing produced no elements. Ensure the <svg> contains supported shapes: " +
+                              "rect, circle, ellipse, line, polyline, polygon, path, text, image. " +
+                              "Check that fill/stroke attributes are set — shapes with no visible attributes may be silently skipped.",
+                    );
+                }
                 const prepared = prepareImportedElements(
                     parsed,
                     placement === "original" ? "original" : "center",
@@ -4988,6 +6321,13 @@ export default function EditorScreen({
             replace_defs: async ({ defs: d = {} } = {}) => {
                 setDefsFromImport(d);
                 return { ok: true };
+            },
+
+            // ── Template metadata ─────────────────────────────────────────────────
+            set_template_name: async ({ name } = {}) => {
+                if (!name?.trim()) throw new Error("name is required");
+                onNameChange?.(name.trim());
+                return { name: name.trim() };
             },
         };
 
@@ -5000,6 +6340,8 @@ export default function EditorScreen({
         addFont,
         addPreparedElements,
         bringForward,
+        canUndo,
+        canRedo,
         canvasSize,
         captureCanvasScreenshot,
         captureElementScreenshot,
@@ -5008,14 +6350,18 @@ export default function EditorScreen({
         defs,
         deleteElements,
         elements,
+        groups,
         onCanvasResize,
+        onNameChange,
         prepareImportedElements,
+        redo,
         selectedId,
         selectedIds,
         sendBackward,
         setDefsFromImport,
         setPrimarySelectedId,
         setSelectedIds,
+        undo,
         uploadScreenshotResult,
         updateElement,
         updateElements,
@@ -5289,6 +6635,10 @@ export default function EditorScreen({
                 onTextEdit={(id) => canvasCtrl.current.textEdit?.(id)}
                 addElement={addElement}
                 collectionItems={collectionItems}
+                groups={groups}
+                makeGroup={makeGroupUI}
+                dissolveGroup={dissolveGroupUI}
+                renameGroup={renameGroupUI}
             />
 
             <div
@@ -5315,18 +6665,28 @@ export default function EditorScreen({
                         scrollbarWidth: "thin",
                     }}
                 >
-                    {/* Canvas size */}
-                    <span
+                    {/* Canvas size — click to resize */}
+                    <button
+                        onClick={() => setShowResizePicker(true)}
+                        title="Resize canvas"
                         style={{
                             fontSize: 10,
                             color: "var(--text-muted)",
                             fontFamily: "DM Mono, monospace",
                             flexShrink: 0,
                             marginRight: 4,
+                            background: "none",
+                            border: "none",
+                            cursor: "pointer",
+                            padding: "2px 4px",
+                            borderRadius: 4,
+                            transition: "color 0.1s, background 0.1s",
                         }}
+                        onMouseEnter={e => { e.currentTarget.style.color = "var(--accent)"; e.currentTarget.style.background = "var(--accent-dim)"; }}
+                        onMouseLeave={e => { e.currentTarget.style.color = "var(--text-muted)"; e.currentTarget.style.background = "none"; }}
                     >
-                        {canvasSize.width}×{canvasSize.height}
-                    </span>
+                        {effectiveCanvasSize.width}×{effectiveCanvasSize.height}
+                    </button>
                     <div
                         style={{
                             width: 1,
@@ -5612,7 +6972,7 @@ export default function EditorScreen({
                         selectedIds={selectedIds}
                         setSelectedIds={setSelectedIds}
                         toggleSelectedId={toggleSelectedId}
-                        canvasSize={canvasSize}
+                        canvasSize={effectiveCanvasSize}
                         activeTool={activeTool}
                         scaleRef={scaleRef}
                         canvasRef={canvasRef}
@@ -5654,8 +7014,16 @@ export default function EditorScreen({
                         onSendBackwardSelection={sendSelectionBackward}
                         onToggleVisibilitySelection={toggleSelectionVisibility}
                         onEditTextSelection={editSelectedText}
+                        groups={groups}
+                        onMakeGroupSelection={makeGroupUI}
+                        onDissolveGroupSelection={dissolveGroupUI}
                         inspectMode={inspectMode}
                         animOverrides={animOverrides}
+                        onCanvasResizeLive={size => setLiveCanvasSize(size)}
+                        onCanvasResizeCommit={size => {
+                            onCanvasResize?.(size);
+                            setLiveCanvasSize(null);
+                        }}
                     />
 
                     {/* Agent lock overlay — blocks user interaction while AI is working */}
@@ -5890,6 +7258,7 @@ export default function EditorScreen({
                                 onOpenCodeEditor={(el) =>
                                     setCodeEditElement(el)
                                 }
+                                onMakeGroup={makeGroupUI}
                             />
                         ) : (
                             <EditorAiChat agent={agentRef} />
@@ -5897,6 +7266,16 @@ export default function EditorScreen({
                     </div>
                 </div>
             </div>
+
+            <CommandPalette
+                isOpen={showCommandPalette}
+                onClose={() => setShowCommandPalette(false)}
+                elements={elements}
+                onSelectElement={handlePaletteSelectElement}
+                onActivateTool={handleSetActiveTool}
+                onInsertIcon={handlePaletteInsertIcon}
+                canvasSize={canvasSize}
+            />
 
             {showKeymap && (
                 <KeymapSettings
@@ -5932,6 +7311,23 @@ export default function EditorScreen({
                     onUpdate={updateVariable}
                     onRemove={removeVariable}
                     onClose={() => setShowVariables(false)}
+                />
+            )}
+
+            {showResizePicker && (
+                <CanvasSizePicker
+                    resizeMode
+                    currentSize={canvasSize}
+                    onPreview={size => setLiveCanvasSize(size)}
+                    onClose={() => {
+                        setLiveCanvasSize(null);
+                        setShowResizePicker(false);
+                    }}
+                    onCreate={size => {
+                        onCanvasResize?.(size);
+                        setLiveCanvasSize(null);
+                        setShowResizePicker(false);
+                    }}
                 />
             )}
 

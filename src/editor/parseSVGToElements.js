@@ -22,7 +22,8 @@ function getPathBbox(d) {
   return (b.width > 0 || b.height > 0) ? { x: b.x, y: b.y, width: b.width, height: b.height } : null;
 }
 
-// Reads a CSS property from inline style OR direct attribute (style wins if both present).
+// Reads a CSS property from inline style OR direct attribute (style wins).
+// Returns null if not present on this element (caller should check inherited ctx).
 function sv(node, prop) {
   const styleStr = node.getAttribute('style') || '';
   const re = new RegExp('(?:^|;)\\s*' + prop.replace('-', '[-]') + '\\s*:\\s*([^;]+)', 'i');
@@ -36,6 +37,19 @@ function parseStrokeDash(node) {
   const sda = sv(node, 'stroke-dasharray');
   if (!sda || sda === 'none') return 'solid';
   return sda.startsWith('2') ? 'dotted' : 'dashed';
+}
+
+// Convert a polygon points string to an SVG path d attribute.
+function polygonPointsToPath(points) {
+  const nums = [];
+  for (const tok of points.trim().split(/[\s,]+/)) {
+    const n = parseFloat(tok);
+    if (!isNaN(n)) nums.push(n);
+  }
+  if (nums.length < 4) return null;
+  let d = `M ${nums[0]} ${nums[1]}`;
+  for (let i = 2; i + 1 < nums.length; i += 2) d += ` L ${nums[i]} ${nums[i + 1]}`;
+  return d + ' Z';
 }
 
 export function parseSVGToElements(svgString) {
@@ -52,22 +66,40 @@ export function parseSVGToElements(svgString) {
   const h = isRelative(rawH) ? (vb?.[3] || 600) : (parseFloat(rawH) || vb?.[3] || 600);
   const canvasSize = { width: w, height: h };
 
+  // Seed root context from the <svg> element's own presentation attributes so
+  // that child shapes that rely on SVG inheritance pick them up.
+  const rootCtx = {
+    fill: sv(svg, 'fill') ?? 'none',
+    stroke: sv(svg, 'stroke') ?? 'none',
+    strokeWidth: parseFloat(sv(svg, 'stroke-width')) || 0,
+    opacity: parseFloat(sv(svg, 'opacity')) || 1,
+  };
+
   const elements = [];
   let counter = 0;
 
-  function walk(node) {
+  // ctx carries inherited presentation values from ancestor elements.
+  function walk(node, ctx = rootCtx) {
     if (node.nodeType !== 1) return;
     const tag = node.tagName.toLowerCase();
 
-    const id = node.getAttribute('id') || `${tag}_${++counter}`;
-    const fill = sv(node, 'fill') || 'none';
-    const stroke = sv(node, 'stroke') || 'none';
-    const strokeWidth = parseFloat(sv(node, 'stroke-width')) || 0;
-    const opacityVal = sv(node, 'opacity');
-    const opacity = opacityVal !== null ? parseFloat(opacityVal) : 1;
-    const display = sv(node, 'display');
-    const strokeDash = parseStrokeDash(node);
+    // Resolve presentation attributes with inheritance fallback.
+    const rawFill   = sv(node, 'fill');
+    const rawStroke = sv(node, 'stroke');
+    const rawSW     = sv(node, 'stroke-width');
+    const rawOp     = sv(node, 'opacity');
+    const fill        = (rawFill   !== null && rawFill   !== 'inherit') ? rawFill   : ctx.fill;
+    const stroke      = (rawStroke !== null && rawStroke !== 'inherit') ? rawStroke : ctx.stroke;
+    const strokeWidth = rawSW !== null ? (parseFloat(rawSW) || 0) : ctx.strokeWidth;
+    const opacity     = rawOp !== null ? parseFloat(rawOp)  : ctx.opacity;
+
+    const id         = node.getAttribute('id') || `${tag}_${++counter}`;
+    const display    = sv(node, 'display');
+    const strokeDash    = parseStrokeDash(node);
     const strokeLinecap = sv(node, 'stroke-linecap') || 'butt';
+
+    // Context to pass into child elements.
+    const childCtx = { fill, stroke, strokeWidth, opacity };
 
     switch (tag) {
       case 'rect': {
@@ -131,10 +163,10 @@ export function parseSVGToElements(svgString) {
         const text = tspans.length
           ? tspans.map((child) => child.textContent || '').join('\n')
           : (node.textContent || '');
-        const fontWeight = sv(node, 'font-weight') || 'normal';
-        const fontFamily = sv(node, 'font-family') || 'sans-serif';
-        const textAnchor = sv(node, 'text-anchor') || 'start';
-        const textFill = sv(node, 'fill') || '#000';
+        const fontWeight  = sv(node, 'font-weight')  || 'normal';
+        const fontFamily  = sv(node, 'font-family')  || 'sans-serif';
+        const textAnchor  = sv(node, 'text-anchor')  || 'start';
+        const textFill    = sv(node, 'fill') ?? fill ?? '#000';
         const lineHeight = (() => {
           if (tspans.length < 2) return 1.2;
           const dy = parseFloat(tspans[1].getAttribute('dy'));
@@ -189,17 +221,41 @@ export function parseSVGToElements(svgString) {
         });
         break;
       }
+      case 'polyline': {
+        // Convert to path so it benefits from the same bbox measurement.
+        const points = node.getAttribute('points') || '';
+        if (!points.trim()) break;
+        const nums = [];
+        for (const tok of points.trim().split(/[\s,]+/)) {
+          const n = parseFloat(tok);
+          if (!isNaN(n)) nums.push(n);
+        }
+        if (nums.length < 4) break;
+        let d = `M ${nums[0]} ${nums[1]}`;
+        for (let i = 2; i + 1 < nums.length; i += 2) d += ` L ${nums[i]} ${nums[i + 1]}`;
+        const bbox = getPathBbox(d);
+        if (!bbox) break;
+        elements.push({
+          id, type: 'path', d,
+          x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height,
+          bboxX: bbox.x, bboxY: bbox.y, bboxWidth: bbox.width, bboxHeight: bbox.height,
+          fill, stroke, strokeWidth, strokeDash, strokeLinecap, opacity,
+          visible: display !== 'none', locked: false, description: '',
+        });
+        break;
+      }
       case 'line': {
         const x1 = parseFloat(node.getAttribute('x1')) || 0;
         const y1 = parseFloat(node.getAttribute('y1')) || 0;
         const x2 = parseFloat(node.getAttribute('x2')) || 100;
         const y2 = parseFloat(node.getAttribute('y2')) || 100;
-        const lineStroke = sv(node, 'stroke');
         elements.push({
           id, type: 'line',
           x: x1, y: y1, width: x2 - x1, height: y2 - y1,
-          fill: 'none', stroke: lineStroke && lineStroke !== 'none' ? lineStroke : '#000',
-          strokeWidth: strokeWidth || 2, strokeDash, strokeLinecap, opacity,
+          fill: 'none',
+          stroke: stroke !== 'none' ? stroke : '#000',
+          strokeWidth: strokeWidth || 2,
+          strokeDash, strokeLinecap, opacity,
           visible: display !== 'none', locked: false, description: '',
         });
         break;
@@ -229,8 +285,21 @@ export function parseSVGToElements(svgString) {
             fill, stroke, strokeWidth, strokeDash, strokeLinecap, opacity,
             visible: display !== 'none', locked: false, description: '',
           });
+        } else {
+          // Raw polygon from external SVG — convert points to a path.
+          const points = node.getAttribute('points') || '';
+          const d = polygonPointsToPath(points);
+          if (!d) break;
+          const bbox = getPathBbox(d);
+          if (!bbox) break;
+          elements.push({
+            id, type: 'path', d,
+            x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height,
+            bboxX: bbox.x, bboxY: bbox.y, bboxWidth: bbox.width, bboxHeight: bbox.height,
+            fill, stroke, strokeWidth, strokeDash, strokeLinecap, opacity,
+            visible: display !== 'none', locked: false, description: '',
+          });
         }
-        // else: arrowhead polygon child — skip
         break;
       }
       case 'g': {
@@ -242,8 +311,8 @@ export function parseSVGToElements(svgString) {
           const height = parseFloat(node.getAttribute('data-height')) || 0;
           const arrowStart = node.getAttribute('data-arrow-start') === 'true';
           const arrowEnd = node.getAttribute('data-arrow-end') === 'true';
-          const arrowStroke = node.getAttribute('data-stroke') || '#000';
-          const arrowSW = parseFloat(node.getAttribute('data-stroke-width')) || 2;
+          const arrowStroke = node.getAttribute('data-stroke') || stroke || '#000';
+          const arrowSW = parseFloat(node.getAttribute('data-stroke-width')) || strokeWidth || 2;
           const lineNode = node.querySelector('line');
           const aDash = lineNode ? parseStrokeDash(lineNode) : 'solid';
           const aLinecap = lineNode ? (sv(lineNode, 'stroke-linecap') || 'butt') : 'butt';
@@ -255,17 +324,17 @@ export function parseSVGToElements(svgString) {
             visible: display !== 'none', locked: false, description: '',
           });
         } else {
-          for (const child of node.children) walk(child);
+          for (const child of node.children) walk(child, childCtx);
         }
         break;
       }
       default:
-        for (const child of node.children) walk(child);
+        for (const child of node.children) walk(child, childCtx);
         break;
     }
   }
 
-  for (const child of svg.children) walk(child);
+  for (const child of svg.children) walk(child, rootCtx);
 
   return { elements, canvasSize };
 }

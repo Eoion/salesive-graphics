@@ -522,7 +522,7 @@ function ThinkingDots({ label = "Thinking" }) {
 }
 
 // ─── Tool call card ───────────────────────────────────────────────────────────
-function ToolCallCard({ tool, status, result, error, isClientTool }) {
+function ToolCallCard({ tool, args, status, result, isClientTool }) {
     const [expanded, setExpanded] = useState(false);
     const label = getToolLabel(tool);
     const screenshotUrl =
@@ -662,6 +662,21 @@ function ToolCallCard({ tool, status, result, error, isClientTool }) {
                     }}
                 >
                     {status === "running" ? `${label}…` : label}
+                    {tool === "agent_thought" && args?.message && (
+                        <span
+                            style={{
+                                display: "block",
+                                fontSize: 10.5,
+                                color: "var(--text-secondary)",
+                                fontStyle: "italic",
+                                fontWeight: 400,
+                                marginTop: 1,
+                                opacity: 0.85,
+                            }}
+                        >
+                            {args.message}
+                        </span>
+                    )}
                     {isClientTool && status === "running" && (
                         <span
                             style={{
@@ -1648,6 +1663,7 @@ export default function EditorAiChat({ agent }) {
                             <ToolCallCard
                                 key={key}
                                 tool={msg.tool}
+                                args={msg.args}
                                 status={msg.status}
                                 result={msg.result}
                                 error={msg.error}

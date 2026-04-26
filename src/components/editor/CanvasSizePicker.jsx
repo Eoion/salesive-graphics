@@ -19,9 +19,29 @@ function AspectPreview({ width, height }) {
   );
 }
 
-export default function CanvasSizePicker({ onClose, onCreate }) {
-  const [customW, setCustomW] = useState('1080');
-  const [customH, setCustomH] = useState('1080');
+export default function CanvasSizePicker({ onClose, onCreate, onPreview, resizeMode = false, currentSize = null }) {
+  const [customW, setCustomW] = useState(resizeMode && currentSize ? String(currentSize.width) : '1080');
+  const [customH, setCustomH] = useState(resizeMode && currentSize ? String(currentSize.height) : '1080');
+
+  const title = resizeMode ? 'Resize Canvas' : 'New Canvas';
+  const subtitle = resizeMode ? 'Choose a new size for your canvas' : 'Choose a size to start editing';
+  const confirmLabel = resizeMode ? 'Resize' : 'Create';
+
+  function handleWidthChange(e) {
+    const val = e.target.value;
+    setCustomW(val);
+    const w = parseInt(val);
+    const h = parseInt(customH);
+    if (onPreview && w >= 100 && h >= 100) onPreview({ width: w, height: h });
+  }
+
+  function handleHeightChange(e) {
+    const val = e.target.value;
+    setCustomH(val);
+    const w = parseInt(customW);
+    const h = parseInt(val);
+    if (onPreview && w >= 100 && h >= 100) onPreview({ width: w, height: h });
+  }
 
   return (
     <div style={{
@@ -41,10 +61,10 @@ export default function CanvasSizePicker({ onClose, onCreate }) {
         }}>
           <div>
             <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--text-primary)', letterSpacing: '-0.2px' }}>
-              New Canvas
+              {title}
             </div>
             <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-              Choose a size to start editing
+              {subtitle}
             </div>
           </div>
           <button onClick={onClose} style={{
@@ -59,7 +79,10 @@ export default function CanvasSizePicker({ onClose, onCreate }) {
         {/* Presets */}
         <div style={{ padding: '16px 20px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
           {CANVAS_PRESETS.map(p => (
-            <button key={p.name} onClick={() => onCreate({ width: p.width, height: p.height })}
+            <button key={p.name} onClick={() => {
+              if (onPreview) onPreview({ width: p.width, height: p.height });
+              onCreate({ width: p.width, height: p.height });
+            }}
               style={{
                 display: 'flex', alignItems: 'center', gap: 12,
                 padding: '12px 14px', borderRadius: 10,
@@ -67,8 +90,16 @@ export default function CanvasSizePicker({ onClose, onCreate }) {
                 cursor: 'pointer', textAlign: 'left',
                 transition: 'all 0.12s',
               }}
-              onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.background = 'var(--accent-dim)'; }}
-              onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.background = 'var(--bg-raised)'; }}>
+              onMouseEnter={e => {
+                e.currentTarget.style.borderColor = 'var(--accent)';
+                e.currentTarget.style.background = 'var(--accent-dim)';
+                if (onPreview) onPreview({ width: p.width, height: p.height });
+              }}
+              onMouseLeave={e => {
+                e.currentTarget.style.borderColor = 'var(--border)';
+                e.currentTarget.style.background = 'var(--bg-raised)';
+                if (onPreview) onPreview({ width: parseInt(customW) || p.width, height: parseInt(customH) || p.height });
+              }}>
               <div style={{ color: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center', width: 40 }}>
                 <AspectPreview width={p.width} height={p.height} />
               </div>
@@ -91,7 +122,7 @@ export default function CanvasSizePicker({ onClose, onCreate }) {
             <label style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 5 }}>
               <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>Width (px)</span>
               <input type="number" value={customW} min="100" max="8000"
-                onChange={e => setCustomW(e.target.value)}
+                onChange={handleWidthChange}
                 style={{
                   background: 'var(--bg-raised)', border: '1px solid var(--border)',
                   color: 'var(--text-primary)', borderRadius: 8, padding: '8px 10px',
@@ -105,7 +136,7 @@ export default function CanvasSizePicker({ onClose, onCreate }) {
             <label style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 5 }}>
               <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>Height (px)</span>
               <input type="number" value={customH} min="100" max="8000"
-                onChange={e => setCustomH(e.target.value)}
+                onChange={handleHeightChange}
                 style={{
                   background: 'var(--bg-raised)', border: '1px solid var(--border)',
                   color: 'var(--text-primary)', borderRadius: 8, padding: '8px 10px',
@@ -126,7 +157,7 @@ export default function CanvasSizePicker({ onClose, onCreate }) {
                 whiteSpace: 'nowrap',
               }}>
               <DuotoneIcon svg={ICONS.plus} size={13} style={{ color: '#fff' }} />
-              Create
+              {confirmLabel}
             </button>
           </div>
         </div>

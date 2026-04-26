@@ -397,6 +397,10 @@ function SelectionQuickActions({
     onToggleVisibility,
     onEditText,
     onColorChange,
+    selectedIds = [],
+    groups = {},
+    onMakeGroup,
+    onDissolveGroup,
 }) {
     const [colorPickerOpen, setColorPickerOpen] = useState(false);
 
@@ -405,6 +409,11 @@ function SelectionQuickActions({
             setColorPickerOpen(false);
         }
     }, [colorPickerOpen, showMenu]);
+
+    const groupsArr = Object.values(groups);
+    const inGroupIds = selectedIds.filter(id => groupsArr.some(g => g.elementIds.includes(id)));
+    const canGroup = selectedIds.length >= 2 && !!onMakeGroup;
+    const canUngroup = inGroupIds.length > 0 && !!onDissolveGroup;
 
     if (!anchor) return null;
 
@@ -527,6 +536,26 @@ function SelectionQuickActions({
                     title="Duplicate"
                     onClick={onDuplicate}
                 />
+                {(canGroup || canUngroup) && (
+                    <>
+                        <div style={{ width: 1, alignSelf: "stretch", background: "rgba(148,163,184,0.22)" }} />
+                        <ActionButton
+                            icon={canUngroup ? ICONS.layers : ICONS.grid}
+                            title={canUngroup ? "Ungroup" : "Group"}
+                            onClick={() => {
+                                if (canUngroup) {
+                                    const groupsToDissolve = groupsArr.filter(g =>
+                                        g.elementIds.some(id => selectedIds.includes(id))
+                                    );
+                                    groupsToDissolve.forEach(g => onDissolveGroup(g.id));
+                                } else {
+                                    onMakeGroup(selectedIds);
+                                }
+                            }}
+                            active={canUngroup}
+                        />
+                    </>
+                )}
                 <div style={{ width: 1, alignSelf: "stretch", background: "rgba(148,163,184,0.22)" }} />
                 <ActionButton
                     icon={locked ? ICONS.unlock : ICONS.lock}
@@ -690,9 +719,15 @@ function EditorCanvas({
     isWorking = false,
     inspectMode = false,
     animOverrides = {},
+    onCanvasResizeLive,
+    onCanvasResizeCommit,
+    groups = {},
+    onMakeGroupSelection,
+    onDissolveGroupSelection,
 }) {
     const outerRef = useRef();
     const svgRef = useRef();
+    const canvasResizeDragRef = useRef(null);
 
     // ── Viewport Persistence ──────────────────────────────────────────────────
     const [viewport, setViewport] = useState(() => {
@@ -944,6 +979,32 @@ function EditorCanvas({
         }
     }
 
+    // ── Canvas resize handles ─────────────────────────────────────────────────
+    const showCanvasHandles = activeTool === 'select' && !selectedId && !selectedIds.length && !pickerMode && !eyedropperActive;
+
+    function startCanvasResizeDrag(e, dir) {
+        e.stopPropagation();
+        canvasResizeDragRef.current = {
+            dir,
+            startClientX: e.clientX,
+            startClientY: e.clientY,
+            startW: canvasSize.width,
+            startH: canvasSize.height,
+        };
+        outerRef.current?.setPointerCapture(e.pointerId);
+    }
+
+    function computeResizeSize(drag, clientX, clientY) {
+        const { dir, startClientX, startClientY, startW, startH } = drag;
+        const scale = scaleRef?.current || 1;
+        const dx = (clientX - startClientX) / scale;
+        const dy = (clientY - startClientY) / scale;
+        return {
+            width:  dir.includes('e') ? Math.max(100, Math.round(startW + dx)) : startW,
+            height: dir.includes('s') ? Math.max(100, Math.round(startH + dy)) : startH,
+        };
+    }
+
     // ── Shared marquee coordinate helper ─────────────────────────────────────
     function clientToCanvas(clientX, clientY) {
         const svgRect = svgRef.current?.getBoundingClientRect();
@@ -978,6 +1039,10 @@ function EditorCanvas({
     }
 
     function handleOuterPointerMove(e) {
+        if (canvasResizeDragRef.current) {
+            onCanvasResizeLive?.(computeResizeSize(canvasResizeDragRef.current, e.clientX, e.clientY));
+            return;
+        }
         const pan = panningRef.current;
         if (pan) {
             const dx = e.clientX - pan.clientX;
@@ -1006,6 +1071,12 @@ function EditorCanvas({
     }
 
     function handleOuterPointerUp(e) {
+        if (canvasResizeDragRef.current) {
+            const size = computeResizeSize(canvasResizeDragRef.current, e.clientX, e.clientY);
+            canvasResizeDragRef.current = null;
+            onCanvasResizeCommit?.(size);
+            return;
+        }
         if (panningRef.current) {
             panningRef.current = null;
         } else if (marqueeStartRef.current) {
@@ -1167,9 +1238,52 @@ function EditorCanvas({
                                 }
                             });
                         }}
+                        selectedIds={selectedIds}
+                        groups={groups}
+                        onMakeGroup={onMakeGroupSelection}
+                        onDissolveGroup={onDissolveGroupSelection}
                     />
                 </div>
             )}
+            {/* Canvas resize handles — shown in screen coords so they stay constant size at any zoom */}
+            {showCanvasHandles && (() => {
+                const s = viewport.scale;
+                const tx = viewport.tx;
+                const ty = viewport.ty;
+                const W = canvasSize.width * s;
+                const H = canvasSize.height * s;
+                const dot = (dir, left, top, cursor, w, h) => (
+                    <div key={dir} onPointerDown={e => startCanvasResizeDrag(e, dir)} style={{
+                        position: 'absolute',
+                        left: tx + left - w / 2,
+                        top:  ty + top  - h / 2,
+                        width: w, height: h,
+                        background: 'var(--accent)',
+                        border: '1.5px solid #fff',
+                        borderRadius: dir === 'se' ? 3 : 3,
+                        cursor,
+                        pointerEvents: 'all',
+                        zIndex: 10,
+                        boxShadow: '0 1px 4px rgba(0,0,0,0.35)',
+                    }} />
+                );
+                return (
+                    <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 5 }}>
+                        <div style={{
+                            position: 'absolute',
+                            left: tx - 1, top: ty - 1,
+                            width: W + 2, height: H + 2,
+                            border: '1px dashed rgba(13,101,217,0.45)',
+                            borderRadius: 1,
+                            pointerEvents: 'none',
+                        }} />
+                        {dot('e',  W,     H / 2, 'ew-resize', 7, 22)}
+                        {dot('s',  W / 2, H,     'ns-resize', 22, 7)}
+                        {dot('se', W,     H,     'se-resize', 10, 10)}
+                    </div>
+                );
+            })()}
+
             {/* Viewport-transformed canvas */}
             <div
                 className="canvas-artboard"

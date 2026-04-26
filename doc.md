@@ -69,18 +69,52 @@ A vector drawing canvas where you design or edit your template before mapping fi
 | Bring forward | `Ctrl+]` |
 | Send backward | `Ctrl+[` |
 | **Duplicate selected** | **`Ctrl+D`** |
+| **Command palette** | **`Ctrl+K`** |
+| Group selected | `Ctrl+G` |
+| Ungroup | `Ctrl+Shift+G` |
+| **Toggle lock/unlock selected** | **`Ctrl+L`** |
 | Snap to image scale | `Ctrl+Shift+M` |
 | Multi-select toggle | `Shift` + click element |
 | Marquee select | Drag on empty canvas space |
 | Nudge element | Arrow keys (1 px) · `Shift` + Arrow (10 px) |
 
+#### Command palette (`Ctrl+K`)
+
+A spotlight-style search bar that opens as a floating overlay. Type anything to search across four categories simultaneously:
+
+| Category | What it finds | Action |
+|----------|---------------|--------|
+| **Tool** | Drawing tools by name | Switches the active tool |
+| **Element** | Canvas elements by id, type, text content, or description | Selects the element on the canvas |
+| **Icon** | All Lucide icons by name | Inserts the icon at canvas center |
+| **Docs** | Sections of this documentation by heading and content | Shows the matching section title and a snippet |
+
+**Keyboard navigation inside the palette:**
+
+| Key | Action |
+|-----|--------|
+| Type | Filter all categories at once |
+| `↑` / `↓` | Move through results |
+| `Enter` | Execute the highlighted result |
+| `Escape` or `Ctrl+K` | Close the palette |
+
 #### Snap to grid
 
 Toggle the **Snap** button in the sub-bar to snap element positions to an 8 px grid while dragging.
 
-#### Element properties (right panel)
+#### Right panel tabs
 
-When an element is selected the right panel shows:
+The right panel has three tabs:
+
+| Tab | Contents |
+|-----|----------|
+| **Properties** | Element properties, batch actions, and AI assistant configuration |
+| **Layers** | Full layer list with group support — see [Layers panel](#layers-panel) below |
+| **Ola** | AI assistant chat |
+
+#### Element properties (Properties tab)
+
+When an element is selected the Properties tab shows:
 
 - **Description** — free-text notes about the element
 - **Position & Size** — X, Y, W, H (numeric inputs); lock icon between W and H locks the aspect ratio so changing one dimension updates the other proportionally
@@ -111,16 +145,45 @@ When an element is selected the right panel shows:
 - `Shift`+click to add/remove element from multi-selection
 - Drag on empty canvas to create a marquee and select all elements **fully or partially inside** the drawn rectangle
 - Drag any selected element to move all of them together
-- When multiple elements are selected, properties panel shows batch actions at the top (lock/unlock all, show/hide all, delete all)
+- When multiple elements are selected, the Properties panel shows batch actions at the top (lock/unlock all, show/hide all, **group**, delete all)
 
 #### Layers panel
 
-Located at the bottom of the left toolbar. Shows all elements in stacking order (top = front). Each row shows the **element type icon** (colored to match the element type) and the element name.
+Located in the **Layers** tab of the right dock. Shows all elements in reverse z-order (top of list = front of canvas). Groups appear as collapsible rows; their children are indented below.
 
-- **Click** a layer row to select that element (clears multi-selection)
-- **Shift+click** a layer row to add/remove that element from multi-selection without clearing it
-- **Drag** a row to reorder it (grab the `⠿` handle on the left)
-- Multi-selected rows show highlighted background; dimmed rows are hidden elements; lock icon marks locked elements
+| Interaction | Effect |
+|-------------|--------|
+| Click a row | Select that element (replaces selection) |
+| `Shift`/`Ctrl`+click a row | Add/remove element from multi-selection |
+| Click a group row | Select all members of that group |
+| Click `▶` / `▼` chevron | Expand / collapse a group |
+| Double-click a group name | Rename the group inline |
+| Eye icon (hover) | Toggle element or group visibility |
+| `×` button on a group row | Dissolve (ungroup) that group |
+| **Group N** button (header) | Group all currently selected elements |
+
+Dimmed rows are hidden elements; lock icon marks locked elements.
+
+#### Groups
+
+Elements can be grouped so that layout tools, the AI agent, and keyboard shortcuts treat them as a unit.
+
+**Creating a group:**
+- Select ≥ 2 elements → click **Group N elements** in the Properties panel Batch Actions section
+- Select ≥ 2 elements → switch to the Layers tab → click **Group N** in the panel header
+- `Ctrl+G` / `Cmd+G` keyboard shortcut (works with any current multi-selection)
+- Select ≥ 2 elements → click the **Group** button in the floating quick-action bar above the selection
+
+**Ungrouping:**
+- Click the `×` button on a group row in the Layers panel
+- `Ctrl+Shift+G` / `Cmd+Shift+G` keyboard shortcut (dissolves all groups that contain a selected element)
+- Click the **Ungroup** button in the floating quick-action bar (shown when a selected element belongs to a group)
+
+**Group behaviour:**
+- Groups created by the AI agent (e.g. buttons, badges, stat blocks) appear automatically in the Layers panel
+- Any tool that accepts element IDs also accepts a group ID — the group expands to all its members
+- Deleting or duplicating a selection that covers a whole group preserves the group relationship on the copies
+- Double-click a group name in the Layers panel to rename it
 
 #### Rotation
 
@@ -311,8 +374,12 @@ To start fresh: click **New Project** in the top bar.
 | `Ctrl+Shift+Z` | Redo |
 | `Delete` / `Backspace` | Delete selected element(s) |
 | `Ctrl+D` | Duplicate selected element(s) (offset +10 px) |
+| `Ctrl+K` | Open command palette (search elements, tools, icons, docs) |
 | `Ctrl+]` | Bring element forward one layer |
 | `Ctrl+[` | Send element backward one layer |
+| `Ctrl+G` | Group selected elements (≥ 2 selected) |
+| `Ctrl+Shift+G` | Ungroup — dissolves all groups containing a selected element |
+| `Ctrl+L` | Toggle lock / unlock on all selected elements |
 | `↑` `↓` `←` `→` | Nudge selected element 1 px |
 | `Shift` + Arrow | Nudge 10 px |
 | Double-click text | Open inline text editor |

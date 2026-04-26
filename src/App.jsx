@@ -442,6 +442,7 @@ export default function App() {
               initialDefs={editorDefsSeed || {}}
               canvasRecord={activeCanvasRecord}
               templateName={templateMeta.name}
+              onNameChange={name => setTemplateMeta(m => ({ ...m, name }))}
               onCanvasRecordChange={(canvas) => {
                 setActiveCanvasRecord(canvas);
                 setTemplateMeta((meta) => ({ ...meta, id: canvas?._id || meta.id, name: canvas?.name || meta.name }));

@@ -15,7 +15,16 @@ export function syncCounter(elements) {
     const m = el.id.match(/_(\d+)$/);
     if (m) max = Math.max(max, parseInt(m[1]));
   }
-  _counter = max;
+  // Only advance — never let a stale elements snapshot reset IDs already allocated
+  // in the same turn by a prior helper call.
+  if (max > _counter) _counter = max;
+}
+
+// Advance the counter past a caller-supplied id so future freshId() calls
+// don't collide with it.
+export function claimId(id) {
+  const m = id && id.match(/_(\d+)$/);
+  if (m) { const n = parseInt(m[1]); if (n > _counter) _counter = n; }
 }
 
 export function freshId(type) {

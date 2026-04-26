@@ -82,7 +82,7 @@ function IconBtn({ icon, title, onClick, danger, accent, disabled }) {
 export default function EditorToolbar({
   activeTool, setActiveTool,
   elements, selectedId, selectedIds,
-  setSelectedId,
+  setSelectedId, setSelectedIds,
   updateElements,
   deleteElements, bringForward, sendBackward,
   alignElement, reorderElement, canvasSize,
@@ -93,10 +93,65 @@ export default function EditorToolbar({
   onTextEdit,
   addElement,
   collectionItems = [],
+  groups = {},
+  makeGroup,
+  dissolveGroup,
+  renameGroup,
 }) {
   const selectedEls = elements.filter(e => selectedIds.includes(e.id));
   const [dragOverId, setDragOverId] = useState(null);
+  const [collapsedGroups, setCollapsedGroups] = useState({});
+  const [renamingGroup, setRenamingGroup] = useState(null);
+  const [renameValue, setRenameValue] = useState('');
+  const renameInputRef = useRef(null);
   const layerScrollRef = useRef();
+
+  function toggleCollapse(gid) {
+    setCollapsedGroups(prev => ({ ...prev, [gid]: !prev[gid] }));
+  }
+
+  function startRename(g, e) {
+    e.stopPropagation();
+    setRenamingGroup(g.id);
+    setRenameValue(g.name || g.id);
+    setTimeout(() => renameInputRef.current?.select(), 30);
+  }
+
+  function commitRename() {
+    if (renamingGroup && renameValue.trim()) renameGroup?.(renamingGroup, renameValue.trim());
+    setRenamingGroup(null);
+  }
+
+  // Map elementId → group
+  const elToGroup = useMemo(() => {
+    const map = {};
+    for (const g of Object.values(groups)) {
+      for (const eid of g.elementIds) map[eid] = g;
+    }
+    return map;
+  }, [groups]);
+
+  // Build display rows in reverse z-order: groups as single rows, ungrouped elements inline
+  const layerRows = useMemo(() => {
+    const rows = [];
+    const renderedEls = new Set();
+    const renderedGroups = new Set();
+    for (let i = elements.length - 1; i >= 0; i--) {
+      const el = elements[i];
+      const g = elToGroup[el.id];
+      if (g) {
+        if (!renderedGroups.has(g.id)) {
+          renderedGroups.add(g.id);
+          rows.push({ kind: 'group', group: g });
+          g.elementIds.forEach(id => renderedEls.add(id));
+        }
+      } else if (!renderedEls.has(el.id)) {
+        renderedEls.add(el.id);
+        rows.push({ kind: 'element', el });
+      }
+    }
+    return rows;
+  }, [elements, elToGroup]);
 
   const isInCollection = useMemo(() =>
     selectedEls.length > 0 && collectionItems.some(item =>
@@ -258,6 +313,26 @@ export default function EditorToolbar({
         <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', flex: 1 }}>
           Layers {elements.length > 0 && `(${elements.length})`}
         </span>
+        {makeGroup && selectedIds.length >= 2 && (
+          <button
+            onClick={() => { makeGroup(selectedIds); setSelectedIds([]); setSelectedId(null); }}
+            title={`Group ${selectedIds.length} selected elements (Ctrl+G)`}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 3,
+              padding: '2px 6px', borderRadius: 4, border: '1px solid var(--accent)',
+              background: 'var(--accent-dim)', color: 'var(--accent)',
+              fontSize: 9, fontWeight: 700, cursor: 'pointer', flexShrink: 0,
+            }}
+          >
+            <svg width="9" height="9" viewBox="0 0 16 16" fill="none">
+              <rect x="1" y="1" width="6" height="6" rx="1.2" stroke="currentColor" strokeWidth="1.5"/>
+              <rect x="9" y="1" width="6" height="6" rx="1.2" stroke="currentColor" strokeWidth="1.5"/>
+              <rect x="1" y="9" width="6" height="6" rx="1.2" stroke="currentColor" strokeWidth="1.5"/>
+              <rect x="9" y="9" width="6" height="6" rx="1.2" stroke="currentColor" strokeWidth="1.5"/>
+            </svg>
+            Group
+          </button>
+        )}
         {onOpenCollection && (
           <IconBtn icon={ICONS.collection} title="Collection" onClick={onOpenCollection} accent />
         )}
@@ -265,7 +340,143 @@ export default function EditorToolbar({
 
       {/* ── Layers list (gets all remaining space) ── */}
       <div ref={layerScrollRef} style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
-        {[...elements].reverse().map(el => {
+        {layerRows.map((row) => {
+          if (row.kind === 'group') {
+            const g = row.group;
+            const isCollapsed = collapsedGroups[g.id];
+            const memberEls = g.elementIds.map(id => elements.find(e => e.id === id)).filter(Boolean);
+            const allSelected = memberEls.length > 0 && memberEls.every(e => selectedIds.includes(e.id));
+            const anyVisible = memberEls.some(e => e.visible !== false);
+
+            return (
+              <div key={g.id}>
+                {/* Group row */}
+                <div
+                  onClick={() => {
+                    const ids = memberEls.map(e => e.id);
+                    setSelectedIds(ids);
+                    if (ids.length) setSelectedId(ids[0]);
+                    setActiveTool('select');
+                  }}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 4,
+                    padding: '4px 6px 4px 4px',
+                    cursor: 'pointer',
+                    background: allSelected ? 'var(--accent-dim)' : 'var(--bg-raised)',
+                    borderLeft: `2px solid ${allSelected ? 'var(--accent)' : 'var(--border)'}`,
+                    borderBottom: '1px solid var(--border)',
+                    opacity: anyVisible ? 1 : 0.45,
+                  }}
+                  onMouseEnter={e => { if (!allSelected) e.currentTarget.style.background = 'var(--bg-hover)'; }}
+                  onMouseLeave={e => { if (!allSelected) e.currentTarget.style.background = 'var(--bg-raised)'; }}
+                >
+                  {/* Collapse toggle */}
+                  <button
+                    onClick={e => { e.stopPropagation(); toggleCollapse(g.id); }}
+                    style={{ background: 'none', border: 'none', padding: '0 1px', cursor: 'pointer', color: 'var(--text-muted)', flexShrink: 0, lineHeight: 1 }}
+                  >
+                    <svg width="8" height="8" viewBox="0 0 10 10" fill="none"
+                      style={{ transform: isCollapsed ? 'rotate(0deg)' : 'rotate(90deg)', transition: 'transform 0.15s', display: 'block' }}>
+                      <path d="M3 2l4 3-4 3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                  </button>
+                  {/* Group icon */}
+                  <svg width="11" height="11" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0, color: 'var(--text-muted)' }}>
+                    <rect x="1" y="1" width="6" height="6" rx="1.2" stroke="currentColor" strokeWidth="1.3"/>
+                    <rect x="9" y="1" width="6" height="6" rx="1.2" stroke="currentColor" strokeWidth="1.3"/>
+                    <rect x="1" y="9" width="6" height="6" rx="1.2" stroke="currentColor" strokeWidth="1.3"/>
+                    <rect x="9" y="9" width="6" height="6" rx="1.2" stroke="currentColor" strokeWidth="1.3"/>
+                  </svg>
+                  {/* Name */}
+                  {renamingGroup === g.id ? (
+                    <input
+                      ref={renameInputRef}
+                      value={renameValue}
+                      onChange={e => setRenameValue(e.target.value)}
+                      onBlur={commitRename}
+                      onKeyDown={e => { if (e.key === 'Enter') commitRename(); if (e.key === 'Escape') setRenamingGroup(null); }}
+                      onClick={e => e.stopPropagation()}
+                      style={{
+                        flex: 1, minWidth: 0, fontSize: 10, fontFamily: 'DM Mono, monospace',
+                        background: 'var(--bg-surface)', border: '1px solid var(--accent)',
+                        borderRadius: 3, padding: '1px 4px', color: 'var(--text-primary)', outline: 'none',
+                      }}
+                      autoFocus
+                    />
+                  ) : (
+                    <span
+                      onDoubleClick={e => startRename(g, e)}
+                      title="Double-click to rename"
+                      style={{
+                        flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        fontSize: 10, fontWeight: 700, fontFamily: 'DM Mono, monospace',
+                        color: allSelected ? 'var(--accent)' : 'var(--text-secondary)',
+                      }}
+                    >
+                      {g.name || g.id}
+                    </span>
+                  )}
+                  <span style={{ fontSize: 9, color: 'var(--text-muted)', flexShrink: 0 }}>{memberEls.length}</span>
+                  {/* Dissolve button */}
+                  <button
+                    onClick={e => { e.stopPropagation(); dissolveGroup?.(g.id); }}
+                    title="Ungroup"
+                    style={{ background: 'none', border: 'none', padding: '1px 2px', cursor: 'pointer', color: 'var(--text-muted)', flexShrink: 0, lineHeight: 1, fontSize: 10 }}
+                    onMouseEnter={e => { e.currentTarget.style.color = 'var(--red)'; }}
+                    onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; }}
+                  >✕</button>
+                </div>
+
+                {/* Group children (when expanded) */}
+                {!isCollapsed && memberEls.map(el => {
+                  const isSelected = selectedIds.includes(el.id);
+                  const dot = TYPE_DOT[el.type] || TYPE_DOT.default;
+                  return (
+                    <div
+                      key={el.id}
+                      data-layerid={el.id}
+                      onClick={e => {
+                        if (e.shiftKey || e.metaKey || e.ctrlKey) {
+                          const next = selectedIds.includes(el.id) ? selectedIds.filter(id => id !== el.id) : [...selectedIds, el.id];
+                          setSelectedIds(next);
+                          if (next.length) setSelectedId(next[next.length - 1]);
+                        } else {
+                          setSelectedId(el.id); setActiveTool('select');
+                        }
+                      }}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 5,
+                        padding: '3px 8px 3px 20px',
+                        cursor: 'pointer',
+                        background: isSelected ? 'var(--accent-dim)' : 'transparent',
+                        borderLeft: `2px solid ${isSelected ? 'var(--accent)' : 'transparent'}`,
+                        opacity: el.visible === false ? 0.4 : 1,
+                      }}
+                      onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = 'var(--bg-hover)'; }}
+                      onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = 'transparent'; }}
+                    >
+                      <span style={{ color: dot, flexShrink: 0, lineHeight: 0 }}>
+                        {ICONS[el.type]
+                          ? <DuotoneIcon svg={ICONS[el.type]} size={11} />
+                          : <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: 2, background: dot }} />}
+                      </span>
+                      <span style={{
+                        fontSize: 10, fontFamily: 'DM Mono, monospace',
+                        color: isSelected ? 'var(--accent)' : 'var(--text-secondary)',
+                        flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                      }}>
+                        {layerLabel(el)}
+                      </span>
+                      {el.locked && <DuotoneIcon svg={ICONS.lock} size={9} />}
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          }
+
+          // Plain element row
+          const { el } = row;
           const isSelected = selectedIds.includes(el.id);
           const isDragOver = el.id === dragOverId;
           const dot = TYPE_DOT[el.type] || TYPE_DOT.default;
@@ -274,7 +485,15 @@ export default function EditorToolbar({
               key={el.id}
               data-layerid={el.id}
               draggable
-              onClick={() => { setSelectedId(el.id); setActiveTool('select'); }}
+              onClick={e => {
+                if (e.shiftKey || e.metaKey || e.ctrlKey) {
+                  const next = selectedIds.includes(el.id) ? selectedIds.filter(id => id !== el.id) : [...selectedIds, el.id];
+                  setSelectedIds(next);
+                  if (next.length) setSelectedId(next[next.length - 1]);
+                } else {
+                  setSelectedId(el.id); setActiveTool('select');
+                }
+              }}
               onDragStart={e => {
                 e.dataTransfer.setData('text/plain', el.id);
                 e.dataTransfer.effectAllowed = 'move';

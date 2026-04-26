@@ -396,7 +396,7 @@ function FontAutocomplete({ defs, onAddFont, onSelect }) {
   );
 }
 
-export default function EditorPropertiesPanel({ elements, selectedId, selectedIds, updateElement, updateElements, deleteElements, defs, onAddGradient, onAddKeyframe, onAddFont, onRemoveFont, onOpenCodeEditor }) {
+export default function EditorPropertiesPanel({ elements, selectedId, selectedIds, updateElement, updateElements, deleteElements, defs, onAddGradient, onAddKeyframe, onAddFont, onRemoveFont, onOpenCodeEditor, onMakeGroup }) {
   const el = elements.find(e => e.id === selectedId);
   const selectedEls = elements.filter(e => selectedIds.includes(e.id));
   const safeFonts = (defs?.fonts || []).filter(font => typeof font?.name === 'string' && font.name.trim());
@@ -570,11 +570,29 @@ export default function EditorPropertiesPanel({ elements, selectedId, selectedId
                 Hide all
               </button>
             </div>
+            {onMakeGroup && (
+              <button
+                onClick={() => onMakeGroup(selectedEls.map(e => e.id))}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'center',
+                  width: '100%', padding: '6px', borderRadius: 7,
+                  background: 'var(--accent-dim)', border: '1px solid var(--accent)',
+                  color: 'var(--accent)', cursor: 'pointer', fontSize: 11, fontWeight: 600,
+                }}>
+                <svg width="11" height="11" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+                  <rect x="1" y="1" width="6" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.5"/>
+                  <rect x="9" y="1" width="6" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.5"/>
+                  <rect x="1" y="9" width="6" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.5"/>
+                  <rect x="9" y="9" width="6" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.5"/>
+                </svg>
+                Group {selectedEls.length} elements
+              </button>
+            )}
             <button
               onClick={() => deleteElements(selectedEls.map(e => e.id))}
               style={{
                 display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'center',
-                width: '100%', marginTop: 4, padding: '6px', borderRadius: 7,
+                width: '100%', padding: '6px', borderRadius: 7,
                 background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)',
                 color: 'var(--red)', cursor: 'pointer', fontSize: 11, fontWeight: 600,
               }}>

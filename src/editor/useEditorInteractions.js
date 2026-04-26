@@ -99,7 +99,6 @@ export function useEditorInteractions({
   setSelectedId,
   setPrimarySelectedId,
   setSelectedIds,
-  toggleSelectedId,
   updateElementLive,
   updateElementsLive,
   commitCurrent,
@@ -114,11 +113,26 @@ export function useEditorInteractions({
   canvasSize,
   snapEnabled = false,
   gridSize = 8,
+  groups = {},
 }) {
   const dragState = useRef(null);
 
   function snapVal(v) {
     return snapEnabled ? Math.round(v / gridSize) * gridSize : v;
+  }
+
+  // Find which group (if any) contains this element ID.
+  function groupOf(elId) {
+    return Object.values(groups).find(g => g.elementIds.includes(elId)) ?? null;
+  }
+
+  // Expand a single element ID to its whole group's element IDs (that exist on canvas).
+  // Returns [elId] when the element has no group, or Alt is held (solo-select mode).
+  function resolveGroupIds(elId, altHeld) {
+    if (altHeld) return [elId];
+    const g = groupOf(elId);
+    if (!g) return [elId];
+    return g.elementIds.filter(id => elements.some(e => e.id === id));
   }
 
   function onElementPointerDown(e, elId) {
@@ -128,21 +142,37 @@ export function useEditorInteractions({
     const el = elements.find(el => el.id === elId);
     if (!el || el.locked) return;
 
-    // Shift+click: toggle selection and return (no drag/resize starts)
+    // Shift+click: toggle selection. If element is in a group (and no Alt),
+    // toggle all group members together.
     if (e.shiftKey) {
       e.stopPropagation();
-      toggleSelectedId(elId);
+      const ids = resolveGroupIds(elId, e.altKey);
+      const allIn = ids.every(id => selectedIds.includes(id));
+      if (allIn) {
+        setSelectedIds(selectedIds.filter(id => !ids.includes(id)));
+      } else {
+        const next = [...new Set([...selectedIds, ...ids])];
+        setSelectedIds(next);
+        setPrimarySelectedId(elId);
+      }
       return;
     }
 
-    // Regular click: update selection based on current state
-    const isAlreadySelected = selectedIds.includes(elId);
+    // Regular click: if element belongs to a group (and Alt not held), select
+    // all group members so they move together. Alt = select this element only.
+    const groupIds = resolveGroupIds(elId, e.altKey);
+    const isAlreadySelected = groupIds.every(id => selectedIds.includes(id));
+
     if (isAlreadySelected) {
-      // Clicking already-selected element keeps multi-selection and makes this primary
+      // Already have the whole group selected — just update the primary
       setPrimarySelectedId(elId);
     } else {
-      // New selection: clear multi-select and select just this element
-      setSelectedId(elId);
+      if (groupIds.length > 1) {
+        setSelectedIds(groupIds);
+        setPrimarySelectedId(elId);
+      } else {
+        setSelectedId(elId);
+      }
     }
 
     // Set pointer capture after selection updates
@@ -221,7 +251,7 @@ export function useEditorInteractions({
       updateElementsLive(patches);
     } else if (dragState.current.type === 'resize') {
       const isText = startEl.type === 'text';
-      const fn = (isText || dragState.current.lockAspect) ? applyHandleDeltaLocked : applyHandleDelta;
+      const fn = (isText || dragState.current.lockAspect || e.shiftKey) ? applyHandleDeltaLocked : applyHandleDelta;
       const updated = fn(startEl, dragState.current.handleId, dx, dy, canvasSize?.width, canvasSize?.height);
       
       if (isText) {
