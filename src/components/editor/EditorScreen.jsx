@@ -746,6 +746,8 @@ export default function EditorScreen({
     const [showPasteSVG, setShowPasteSVG] = useState(false);
     const [showVariables, setShowVariables] = useState(false);
     const [showResizePicker, setShowResizePicker] = useState(false);
+    const [showExportMenu, setShowExportMenu] = useState(false);
+    const exportMenuRef = useRef(null);
     const [liveCanvasSize, setLiveCanvasSize] = useState(null);
     const effectiveCanvasSize = liveCanvasSize ?? canvasSize;
     const [codeEditElement, setCodeEditElement] = useState(null);
@@ -898,8 +900,9 @@ export default function EditorScreen({
         refreshCollectionItems();
     }, [refreshCollectionItems]);
 
-    const buildCanvasPayload = useCallback(() => {
+    const buildCanvasPayload = useCallback(async () => {
         const svg = serializeElements(elements, canvasSize, defs);
+        const previewSvg = await inlineExternalImages(svg);
         return {
             id: canvasRecord?._id,
             name: templateName?.trim() || "Untitled Template",
@@ -909,7 +912,7 @@ export default function EditorScreen({
             defs,
             groups,
             svg,
-            previewSvg: svg,
+            previewSvg,
         };
     }, [canvasRecord?._id, canvasSize, defs, elements, groups, isPublic, templateName]);
 
@@ -927,7 +930,7 @@ export default function EditorScreen({
     const handleManualSave = useCallback(async () => {
         try {
             setSaveState((prev) => ({ ...prev, status: "saving" }));
-            const response = await canvases.saveCanvas(buildCanvasPayload());
+            const response = await canvases.saveCanvas(await buildCanvasPayload());
             const canvas = response.data.data.canvas;
             refreshCanvasRecord(canvas);
             onCanvasesRefresh?.();
@@ -944,7 +947,7 @@ export default function EditorScreen({
         autoSaveTimerRef.current = setTimeout(async () => {
             try {
                 setSaveState((prev) => ({ ...prev, status: "saving" }));
-                const response = await canvases.saveDraft(buildCanvasPayload());
+                const response = await canvases.saveDraft(await buildCanvasPayload());
                 refreshCanvasRecord(response.data.data.canvas);
             } catch (error) {
                 console.error("Auto-save failed:", error);
@@ -957,6 +960,17 @@ export default function EditorScreen({
                 clearTimeout(autoSaveTimerRef.current);
         };
     }, [buildCanvasPayload, refreshCanvasRecord]);
+
+    useEffect(() => {
+        if (!showExportMenu) return;
+        function handleOutside(e) {
+            if (exportMenuRef.current && !exportMenuRef.current.contains(e.target)) {
+                setShowExportMenu(false);
+            }
+        }
+        document.addEventListener("pointerdown", handleOutside);
+        return () => document.removeEventListener("pointerdown", handleOutside);
+    }, [showExportMenu]);
 
     // Inject / remove loaded fonts in the document head whenever the font list changes
     useEffect(() => {
@@ -1376,12 +1390,30 @@ export default function EditorScreen({
         eyedropperPrevIdRef.current = null;
     }
 
-    function handleDownload() {
+    const safeFilename = (ext) => {
+        const base = (templateName || "canvas").trim().replace(/[\\/:*?"<>|]/g, "_") || "canvas";
+        return `${base}.${ext}`;
+    };
+
+    async function handleDownloadSVG() {
+        setShowExportMenu(false);
         const svg = serializeElements(elements, canvasSize, defs);
-        const blob = new Blob([svg], { type: "image/svg+xml" });
+        const inlined = await inlineExternalImages(svg);
+        const blob = new Blob([inlined], { type: "image/svg+xml" });
         const a = document.createElement("a");
         a.href = URL.createObjectURL(blob);
-        a.download = "canvas.svg";
+        a.download = safeFilename("svg");
+        a.click();
+        URL.revokeObjectURL(a.href);
+    }
+
+    async function handleDownloadPNG() {
+        setShowExportMenu(false);
+        const svg = serializeElements(elements, canvasSize, defs);
+        const { dataUrl } = await createCanvasScreenshot(svg, canvasSize, { format: "png", maxDimension: 4096 });
+        const a = document.createElement("a");
+        a.href = dataUrl;
+        a.download = safeFilename("png");
         a.click();
     }
 
@@ -6913,14 +6945,73 @@ export default function EditorScreen({
                             Save
                         </button>
 
-                        <button
-                            onClick={handleDownload}
-                            style={subBtn()}
-                            title="Download SVG"
-                        >
-                            <DuotoneIcon svg={ICONS.download} size={12} />
-                            Export
-                        </button>
+                        <div ref={exportMenuRef} style={{ position: "relative" }}>
+                            <button
+                                onClick={() => setShowExportMenu((v) => !v)}
+                                style={subBtn(showExportMenu)}
+                                title="Export canvas"
+                            >
+                                <DuotoneIcon svg={ICONS.download} size={12} />
+                                Export
+                                <span style={{ fontSize: 9, marginLeft: 2, opacity: 0.7 }}>▾</span>
+                            </button>
+                            {showExportMenu && (
+                                <div
+                                    style={{
+                                        position: "absolute",
+                                        bottom: "calc(100% + 6px)",
+                                        right: 0,
+                                        minWidth: 140,
+                                        padding: 6,
+                                        borderRadius: 10,
+                                        border: "1px solid rgba(15,23,42,0.1)",
+                                        background: "var(--surface)",
+                                        boxShadow: "0 8px 24px rgba(15,23,42,0.16)",
+                                        zIndex: 200,
+                                        display: "flex",
+                                        flexDirection: "column",
+                                        gap: 2,
+                                    }}
+                                    onPointerDown={(e) => e.stopPropagation()}
+                                >
+                                    {[
+                                        { label: "Export as SVG", onClick: handleDownloadSVG },
+                                        { label: "Export as PNG", onClick: handleDownloadPNG },
+                                    ].map(({ label, onClick }) => (
+                                        <button
+                                            key={label}
+                                            onClick={onClick}
+                                            style={{
+                                                width: "100%",
+                                                border: "none",
+                                                background: "transparent",
+                                                color: "var(--text-secondary)",
+                                                display: "flex",
+                                                alignItems: "center",
+                                                gap: 8,
+                                                padding: "7px 10px",
+                                                fontSize: 12,
+                                                fontFamily: "Syne, sans-serif",
+                                                textAlign: "left",
+                                                cursor: "pointer",
+                                                borderRadius: 7,
+                                            }}
+                                            onMouseEnter={(e) => {
+                                                e.currentTarget.style.background = "rgba(13,101,217,0.08)";
+                                                e.currentTarget.style.color = "var(--accent)";
+                                            }}
+                                            onMouseLeave={(e) => {
+                                                e.currentTarget.style.background = "transparent";
+                                                e.currentTarget.style.color = "var(--text-secondary)";
+                                            }}
+                                        >
+                                            <DuotoneIcon svg={ICONS.download} size={12} />
+                                            {label}
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
                     </div>
 
                     <button
