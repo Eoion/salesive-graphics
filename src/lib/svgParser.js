@@ -18,6 +18,33 @@ function getBBox(el) {
 
 const EDITABLE_TAGS = new Set(['text', 'image', 'rect', 'circle', 'ellipse', 'path', 'polygon', 'polyline', 'g', 'line', 'tspan']);
 
+// Turn an arbitrary SVG element id into a valid CSS identifier so it can be
+// used in a `#...` querySelector. Template ids like "cta:icon", "123-bg" or
+// "Hero Title" are legal XML ids but throw an uncaught SyntaxError from
+// querySelector, which white-screens the preview.
+function escapeSelectorId(id) {
+  const raw = String(id ?? '');
+  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+    return CSS.escape(raw);
+  }
+  // Fallback for non-browser environments: escape reserved characters and
+  // avoid leading digits / lone hyphens, which CSS identifiers forbid.
+  let out = raw.replace(/([^a-zA-Z0-9_-])/g, (m) => `\\${m}`);
+  if (/^[0-9-]/.test(out)) out = `_${out}`;
+  return out;
+}
+
+// querySelector throws SyntaxError on a malformed selector (e.g. from a schema
+// built before ids were escaped). Return null instead so rendering survives.
+function safeQuery(doc, selector) {
+  if (!selector) return null;
+  try {
+    return doc.querySelector(selector);
+  } catch {
+    return null;
+  }
+}
+
 function inferType(tag, id, el) {
   const idLower = (id || '').toLowerCase();
   if (tag === 'text' || tag === 'tspan') return 'text';
@@ -111,9 +138,9 @@ export function buildSchema(templateMeta, fields, canvas) {
       };
       if (f.description) base.description = f.description;
       if (f.fieldType === 'color' && f.targets?.length > 1) {
-        base.targets = f.targets.map(t => ({ selector: `#${t.id}`, attr: t.attr || 'fill' }));
+        base.targets = f.targets.map(t => ({ selector: `#${escapeSelectorId(t.id)}`, attr: t.attr || 'fill' }));
       } else {
-        base.target = { selector: `#${f.nodeId}` };
+        base.target = { selector: `#${escapeSelectorId(f.nodeId)}` };
       }
       if (f.fieldType === 'text') {
         if (f.maxLength)    base.maxLength    = f.maxLength;
@@ -149,11 +176,11 @@ export function applySchema(svgString, schema, values) {
     if (value == null) continue;
 
     if (field.type === 'text') {
-      const el = doc.querySelector(field.target?.selector);
+      const el = safeQuery(doc, field.target?.selector);
       if (el) el.textContent = value;
     }
     if (field.type === 'image') {
-      const el = doc.querySelector(field.target?.selector);
+      const el = safeQuery(doc, field.target?.selector);
       if (el) {
         el.setAttribute('href', value);
         el.setAttributeNS('http://www.w3.org/1999/xlink', 'xlink:href', value);
@@ -162,7 +189,7 @@ export function applySchema(svgString, schema, values) {
     if (field.type === 'color') {
       const targets = field.targets || (field.target ? [{ ...field.target, attr: 'fill' }] : []);
       for (const t of targets) {
-        const el = doc.querySelector(t.selector);
+        const el = safeQuery(doc, t.selector);
         if (el) el.setAttribute(t.attr || 'fill', value);
       }
     }
