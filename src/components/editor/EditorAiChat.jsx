@@ -60,7 +60,7 @@ const TOOL_LABELS = {
     send_to_back: "Sending to back",
     agent_thought: "Thinking",
 };
-function getToolLabel(tool) {
+export function getToolLabel(tool) {
     const normalized = String(tool || "").replace(/^editor\./, "");
     return TOOL_LABELS[normalized] || normalized.replace(/_/g, " ") || "Tool";
 }

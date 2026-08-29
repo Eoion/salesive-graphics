@@ -6,7 +6,7 @@
 // agents / extensions that speak WebMCP can drive the SVG editor with the exact
 // same capabilities as the built-in assistant.
 
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import '@mcp-b/global'; // side-effect: polyfills document.modelContext when absent
 
 // Human-readable descriptions for the tools whose purpose isn't obvious from the
@@ -84,6 +84,11 @@ const TOOL_DESCRIPTIONS = {
   insert_svg: 'Parse and insert raw SVG markup. Args: { svg, placement? }.',
   replace_defs: 'Replace the canvas <defs> (gradients, filters, fonts). Args: { defs }.',
   set_template_name: 'Set the template / document name. Args: { name }.',
+  get_editor_guide: 'Return a guide explaining how to drive this SVG editor with these tools — call it before making changes. Optional args: { topic }.',
+  lock_canvas: 'Lock the canvas so the user cannot edit while you work. Always pair with unlock_canvas. Args: { reason? }.',
+  unlock_canvas: 'Release the canvas lock taken with lock_canvas. Call this when you finish or abort.',
+  ask_canvas_question: 'Ask the user a question about the canvas and wait for their reply. Args: { question, options?: string[], allowCustom? }. Returns { answered, answer, custom }.',
+  set_agent_identity: 'Set the name and avatar shown for you in the editor activity panel. Args: { name?, avatar? } where avatar is an https URL or a data:image/... base64 URI.',
 };
 
 function humanize(name) {
@@ -110,11 +115,16 @@ function toContent(result) {
  * component. `clientToolHandlers` is the map returned by EditorScreen (the same
  * object handed to useEditorAgent). Aliased `editor.*` duplicates are skipped.
  */
-export function useWebMCP(clientToolHandlers, { enabled = true } = {}) {
+export function useWebMCP(clientToolHandlers, { enabled = true, onEvent } = {}) {
   // Keep the latest handler map in a ref so registered tools always call the
   // current closure without needing to re-register on every render.
   const handlersRef = useRef(clientToolHandlers);
   useEffect(() => { handlersRef.current = clientToolHandlers; }, [clientToolHandlers]);
+  const onEventRef = useRef(onEvent);
+  useEffect(() => { onEventRef.current = onEvent; }, [onEvent]);
+  const emit = useCallback((evt) => {
+    try { onEventRef.current?.({ at: Date.now(), ...evt }); } catch { /* listener errors are not our problem */ }
+  }, []);
 
   useEffect(() => {
     if (!enabled) return;
@@ -137,11 +147,17 @@ export function useWebMCP(clientToolHandlers, { enabled = true } = {}) {
             async execute(args) {
               const handler = handlersRef.current?.[name];
               if (!handler) throw new Error(`No handler for tool "${name}"`);
+              const callId = `mcp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+              emit({ type: 'call', id: callId, name, args: args || {} });
               try {
-                return toContent(await handler(args || {}));
+                const result = await handler(args || {});
+                emit({ type: 'result', id: callId, name, args: args || {}, result });
+                return toContent(result);
               } catch (err) {
+                const message = err?.message || String(err);
+                emit({ type: 'error', id: callId, name, args: args || {}, error: message });
                 return {
-                  content: [{ type: 'text', text: `Error: ${err?.message || String(err)}` }],
+                  content: [{ type: 'text', text: `Error: ${message}` }],
                   isError: true,
                 };
               }
@@ -157,5 +173,5 @@ export function useWebMCP(clientToolHandlers, { enabled = true } = {}) {
 
     console.info(`[WebMCP] exposed ${names.length} editor tools to AI agents.`);
     return () => controller.abort();
-  }, [enabled, clientToolHandlers]);
+  }, [enabled, clientToolHandlers, emit]);
 }

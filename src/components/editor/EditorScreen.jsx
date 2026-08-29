@@ -20,7 +20,7 @@ import { canvases, collections } from "../../lib/api.js";
 import { syncCounter, freshId, claimId } from "../../editor/editorConstants.js";
 import EditorToolbar from "./EditorToolbar.jsx";
 import EditorCanvas from "./EditorCanvas.jsx";
-import EditorAiChat, { uploadImageToStore } from "./EditorAiChat.jsx";
+import EditorAiChat, { uploadImageToStore, getToolLabel } from "./EditorAiChat.jsx";
 import EditorPropertiesPanel from "./EditorPropertiesPanel.jsx";
 import LayersPanel from "./LayersPanel.jsx";
 import CommandPalette from "./CommandPalette.jsx";
@@ -729,6 +729,51 @@ function buildRegionReview(elements, region, canvasSize, goals = []) {
 
 const GUEST_GROUPS_KEY = "salesive_editor_groups";
 
+// Self-describing guide returned by the `get_editor_guide` tool so an agent can
+// learn how to drive this editor before it starts making changes.
+const EDITOR_GUIDE = `# Salesive SVG Editor — agent guide
+
+You are editing a fixed-size SVG canvas made of flat elements (rect, text,
+image/icon, line, path). Elements have an \`id\`, a position (\`x\`,\`y\` = top-left),
+a size (\`width\`,\`height\`), plus style props (\`fill\`, \`stroke\`, \`strokeWidth\`,
+\`opacity\`, \`rx\`). Text elements also have \`text\`, \`fontSize\`, \`fontFamily\`,
+\`fontWeight\`, \`textAnchor\`, \`lineHeight\`, \`textWrap\`.
+
+## Recommended workflow
+1. Call \`lock_canvas\` with a short \`reason\` so the user does not fight you for
+   control while you work. Always call \`unlock_canvas\` when you finish (or fail).
+2. Call \`get_canvas_state\` (or \`get_snapshot\`) to read size, defs and elements.
+   Use \`get_canvas_screenshot\` / \`review_canvas_region\` to actually see it.
+3. Plan the layout in canvas coordinates. Keep everything inside the canvas
+   bounds; use \`check_layout\` to detect overflow/overlap.
+4. Make changes with the mutation tools:
+   - create: \`add_element\`, \`add_elements\`, \`add_icon\`, and the \`create_*\`
+     component helpers (create_button, create_card, create_navbar, …).
+   - edit: \`update_element(s)\`, \`set_fill\`, \`set_stroke\`, \`set_opacity\`,
+     \`set_text\`, \`move_element\`, \`resize_element\`.
+   - arrange: \`align_elements\`, \`distribute_elements\`, \`arrange_row/column/grid\`,
+     \`center_in_canvas\`, \`place_at\`, \`constrain_elements\`, \`snap_to_grid\`.
+   - order: \`bring_forward\`, \`send_backward\`, \`bring_to_front\`, \`send_to_back\`.
+   - group: \`create_group\`, \`add_to_group\`, \`dissolve_group\`.
+5. Prefer batch tools (\`update_elements\`, \`add_elements\`, \`batch_update_texts\`)
+   over many single calls.
+6. If a decision is genuinely the user's to make (wording, brand colour, which
+   of two directions), call \`ask_canvas_question\` with a few \`options\` instead
+   of guessing.
+7. Every action is undoable — \`undo_last_action\` / \`redo_last_action\`.
+8. When done: verify with a screenshot, then \`unlock_canvas\`.
+
+## Tips
+- Coordinates are unscaled SVG units, origin top-left.
+- \`textAnchor\` "middle" needs \`x\` at the centre of the text box.
+- Load non-standard fonts with \`load_font\` before applying them.
+- Use \`fix_elements\` to repair NaN / zero-size elements.
+`;
+
+function makeQuestionId() {
+    return `q_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
 function loadGuestGroups() {
     try {
         const raw = localStorage.getItem(GUEST_GROUPS_KEY);
@@ -764,7 +809,7 @@ export default function EditorScreen({
     onCanvasesRefresh,
 }) {
     const [activeTool, setActiveTool] = useState("select");
-    const [activeDock, setActiveDock] = useState(isGuest ? "properties" : "ai");
+    const [activeDock, setActiveDock] = useState(isGuest ? "activity" : "ai");
     const [showCommandPalette, setShowCommandPalette] = useState(false);
     const [showKeymap, setShowKeymap] = useState(false);
     const [showCollection, setShowCollection] = useState(false);
@@ -791,6 +836,56 @@ export default function EditorScreen({
         updatedAt: canvasRecord?.updatedAt || null,
     });
     const [isPublic, setIsPublic] = useState(canvasRecord?.public ?? true);
+
+    // Agent-controlled canvas lock + question prompt (driven by editor tools)
+    const [agentLock, setAgentLock] = useState({ locked: false, reason: null });
+
+    // Identity + live tool-call feed for external (WebMCP) agents
+    const [agentIdentity, setAgentIdentity] = useState({ name: null, avatar: null });
+    const [mcpEvents, setMcpEvents] = useState([]);
+    const handleMcpEvent = useCallback((evt) => {
+        setMcpEvents((prev) => {
+            if (evt.type === "result" || evt.type === "error") {
+                const idx = prev.findIndex((e) => e.id === evt.id);
+                if (idx !== -1) {
+                    const next = prev.slice();
+                    next[idx] = {
+                        ...next[idx],
+                        status: evt.type === "error" ? "error" : "done",
+                        result: evt.result,
+                        error: evt.error,
+                        endedAt: evt.at,
+                    };
+                    return next;
+                }
+            }
+            const row = {
+                id: evt.id,
+                name: evt.name,
+                args: evt.args,
+                status: evt.type === "call" ? "running" : evt.type === "error" ? "error" : "done",
+                result: evt.result,
+                error: evt.error,
+                at: evt.at,
+            };
+            return [...prev, row].slice(-100);
+        });
+    }, []);
+    const [pendingQuestion, setPendingQuestion] = useState(null);
+    const questionResolverRef = useRef(null);
+    const answerPendingQuestion = useCallback((answer, custom = false) => {
+        if (questionResolverRef.current) {
+            questionResolverRef.current({ answer, custom, cancelled: answer == null });
+            questionResolverRef.current = null;
+        }
+        setPendingQuestion(null);
+    }, []);
+    useEffect(() => () => {
+        // Don't leave an awaiting tool call hanging if the editor unmounts.
+        questionResolverRef.current?.({ answer: null, custom: false, cancelled: true });
+        questionResolverRef.current = null;
+    }, []);
+
     const [collectionItems, setCollectionItems] = useState([]);
     const [collectionsLoading, setCollectionsLoading] = useState(false);
     const [groups, setGroups] = useState(
@@ -6407,6 +6502,71 @@ export default function EditorScreen({
                 return { ok: true };
             },
 
+            // ── Agent guidance / coordination ────────────────────────────────────
+            get_editor_guide: async ({ topic } = {}) => ({
+                topic: topic || "overview",
+                guide: EDITOR_GUIDE,
+            }),
+
+            lock_canvas: async ({ reason } = {}) => {
+                const r = String(reason || "").trim() || null;
+                setAgentLock({ locked: true, reason: r });
+                return { locked: true, reason: r };
+            },
+
+            unlock_canvas: async () => {
+                setAgentLock({ locked: false, reason: null });
+                return { locked: false };
+            },
+
+            ask_canvas_question: async ({
+                question,
+                options = [],
+                allowCustom = true,
+            } = {}) => {
+                const q = String(question || "").trim();
+                if (!q) throw new Error("question is required");
+                // Supersede any question still waiting for an answer.
+                if (questionResolverRef.current) {
+                    questionResolverRef.current({
+                        answer: null,
+                        custom: false,
+                        cancelled: true,
+                    });
+                    questionResolverRef.current = null;
+                }
+                const normOptions = (Array.isArray(options) ? options : [])
+                    .map((o) => String(o).trim())
+                    .filter(Boolean);
+                const { answer, custom, cancelled } = await new Promise(
+                    (resolve) => {
+                        questionResolverRef.current = resolve;
+                        setPendingQuestion({
+                            id: makeQuestionId(),
+                            question: q,
+                            options: normOptions,
+                            allowCustom: allowCustom !== false,
+                        });
+                    },
+                );
+                if (cancelled || answer == null) {
+                    return { answered: false, cancelled: true };
+                }
+                return { answered: true, answer, custom: Boolean(custom) };
+            },
+
+            set_agent_identity: async ({ name, avatar } = {}) => {
+                const nm = String(name || "").trim().slice(0, 40) || null;
+                const av = String(avatar || "").trim() || null;
+                if (av && !/^(https?:\/\/|data:image\/)/i.test(av)) {
+                    throw new Error(
+                        "avatar must be an https URL or a data:image/... base64 URI",
+                    );
+                }
+                setAgentIdentity({ name: nm, avatar: av });
+                return { name: nm, avatar: av ? "set" : null };
+            },
+
             // ── Template metadata ─────────────────────────────────────────────────
             set_template_name: async ({ name } = {}) => {
                 if (!name?.trim()) throw new Error("name is required");
@@ -6461,7 +6621,7 @@ export default function EditorScreen({
     });
 
     // Expose every tool Ola uses to external AI agents via the WebMCP API.
-    useWebMCP(clientToolHandlers);
+    useWebMCP(clientToolHandlers, { onEvent: handleMcpEvent });
     const { agentCursor } = agentRef;
 
     // ── Typewriter status for Ola overlay ─────────────────────────────────────
@@ -7173,8 +7333,8 @@ export default function EditorScreen({
                         }}
                     />
 
-                    {/* Agent lock overlay — blocks user interaction while AI is working */}
-                    {!agentRef.isAgentDone && (
+                    {/* Agent lock overlay — blocks user interaction while AI is working or has locked the canvas */}
+                    {(!agentRef.isAgentDone || agentLock.locked) && (
                         <div
                             onClick={handleOverlayClick}
                             style={{
@@ -7223,7 +7383,9 @@ export default function EditorScreen({
                                         whiteSpace: "normal",
                                     }}
                                 >
-                                    {thinkDisplayText}
+                                    {agentRef.isAgentDone && agentLock.locked
+                                        ? agentLock.reason || "Ola locked the canvas while it works…"
+                                        : thinkDisplayText}
                                     {isTypingThought && (
                                         <span
                                             style={{
@@ -7328,6 +7490,14 @@ export default function EditorScreen({
                                           indicator: agentCursor.visible,
                                       },
                                   ]),
+                            {
+                                key: "activity",
+                                icon: ICONS.ai,
+                                label: agentIdentity.name || "Activity",
+                                indicator:
+                                    activeDock !== "activity" &&
+                                    mcpEvents.some((e) => e.status === "running"),
+                            },
                         ].map((tab) => (
                             <button
                                 key={tab.key}
@@ -7393,7 +7563,15 @@ export default function EditorScreen({
                             flexDirection: "column",
                         }}
                     >
-                        {isGuest || activeDock === "properties" ? (
+                        {activeDock === "activity" ? (
+                            <WebMcpActivityPanel
+                                identity={agentIdentity}
+                                events={mcpEvents}
+                                onClear={() => setMcpEvents([])}
+                            />
+                        ) : !isGuest && activeDock === "ai" ? (
+                            <EditorAiChat agent={agentRef} />
+                        ) : (
                             <EditorPropertiesPanel
                                 elements={elements}
                                 selectedId={selectedId}
@@ -7411,8 +7589,6 @@ export default function EditorScreen({
                                 }
                                 onMakeGroup={makeGroupUI}
                             />
-                        ) : (
-                            <EditorAiChat agent={agentRef} />
                         )}
                     </div>
                 </div>
@@ -7496,6 +7672,381 @@ export default function EditorScreen({
                     onClose={() => setCodeEditElement(null)}
                 />
             )}
+
+            {pendingQuestion && (
+                <AgentQuestionModal
+                    key={pendingQuestion.id}
+                    question={pendingQuestion.question}
+                    options={pendingQuestion.options}
+                    allowCustom={pendingQuestion.allowCustom}
+                    onAnswer={(answer, custom) => answerPendingQuestion(answer, custom)}
+                    onDismiss={() => answerPendingQuestion(null)}
+                />
+            )}
+        </div>
+    );
+}
+
+function AgentQuestionModal({ question, options, allowCustom, onAnswer, onDismiss }) {
+    const [custom, setCustom] = useState("");
+    return (
+        <div
+            style={{
+                position: "fixed",
+                inset: 0,
+                zIndex: 300,
+                background: "rgba(0,0,0,0.4)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                backdropFilter: "blur(2px)",
+            }}
+            onClick={onDismiss}
+        >
+            <div
+                onClick={(e) => e.stopPropagation()}
+                style={{
+                    width: 420,
+                    maxWidth: "90vw",
+                    background: "var(--bg-surface)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 14,
+                    boxShadow: "0 20px 60px rgba(0,0,0,0.4)",
+                    padding: 20,
+                    fontFamily: "Syne, sans-serif",
+                }}
+            >
+                <div
+                    style={{
+                        fontSize: 10,
+                        fontWeight: 700,
+                        letterSpacing: "0.12em",
+                        textTransform: "uppercase",
+                        color: "var(--accent)",
+                        marginBottom: 8,
+                    }}
+                >
+                    Ola has a question
+                </div>
+                <div
+                    style={{
+                        fontSize: 14,
+                        color: "var(--text-primary)",
+                        lineHeight: 1.5,
+                        marginBottom: 16,
+                        whiteSpace: "pre-wrap",
+                    }}
+                >
+                    {question}
+                </div>
+
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {options.map((opt) => (
+                        <button
+                            key={opt}
+                            onClick={() => onAnswer(opt, false)}
+                            style={{
+                                textAlign: "left",
+                                padding: "9px 12px",
+                                borderRadius: 8,
+                                border: "1px solid var(--border)",
+                                background: "var(--bg-raised)",
+                                color: "var(--text-primary)",
+                                fontSize: 13,
+                                cursor: "pointer",
+                                fontFamily: "Syne, sans-serif",
+                            }}
+                            onMouseEnter={(e) => {
+                                e.currentTarget.style.borderColor = "var(--accent)";
+                                e.currentTarget.style.color = "var(--accent)";
+                            }}
+                            onMouseLeave={(e) => {
+                                e.currentTarget.style.borderColor = "var(--border)";
+                                e.currentTarget.style.color = "var(--text-primary)";
+                            }}
+                        >
+                            {opt}
+                        </button>
+                    ))}
+                </div>
+
+                {allowCustom && (
+                    <form
+                        onSubmit={(e) => {
+                            e.preventDefault();
+                            const v = custom.trim();
+                            if (v) onAnswer(v, true);
+                        }}
+                        style={{ display: "flex", gap: 6, marginTop: options.length ? 12 : 0 }}
+                    >
+                        <input
+                            autoFocus
+                            value={custom}
+                            onChange={(e) => setCustom(e.target.value)}
+                            placeholder={options.length ? "Or type your own answer…" : "Type your answer…"}
+                            style={{
+                                flex: 1,
+                                background: "var(--bg-raised)",
+                                border: "1px solid var(--border)",
+                                color: "var(--text-primary)",
+                                borderRadius: 8,
+                                padding: "9px 12px",
+                                fontSize: 13,
+                                fontFamily: "Syne, sans-serif",
+                                outline: "none",
+                            }}
+                        />
+                        <button
+                            type="submit"
+                            disabled={!custom.trim()}
+                            style={{
+                                padding: "9px 14px",
+                                borderRadius: 8,
+                                border: "none",
+                                background: custom.trim() ? "var(--accent)" : "var(--bg-raised)",
+                                color: custom.trim() ? "#fff" : "var(--text-muted)",
+                                fontSize: 13,
+                                fontWeight: 600,
+                                cursor: custom.trim() ? "pointer" : "not-allowed",
+                                fontFamily: "Syne, sans-serif",
+                            }}
+                        >
+                            Send
+                        </button>
+                    </form>
+                )}
+
+                <button
+                    onClick={onDismiss}
+                    style={{
+                        marginTop: 14,
+                        background: "none",
+                        border: "none",
+                        color: "var(--text-muted)",
+                        fontSize: 11,
+                        cursor: "pointer",
+                        fontFamily: "Syne, sans-serif",
+                    }}
+                >
+                    Dismiss (skip this question)
+                </button>
+            </div>
+        </div>
+    );
+}
+
+function initialsOf(name) {
+    const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) return "AI";
+    return (parts[0][0] + (parts[1]?.[0] || "")).toUpperCase();
+}
+
+function summarizeArgs(args) {
+    if (!args || typeof args !== "object") return "";
+    const pick = ["id", "ids", "name", "type", "text", "reason", "question", "fill", "fontFamily"];
+    for (const k of pick) {
+        if (args[k] != null) {
+            const v = Array.isArray(args[k]) ? `${args[k].length} item(s)` : String(args[k]);
+            return `${k}: ${v.length > 40 ? v.slice(0, 39) + "…" : v}`;
+        }
+    }
+    const keys = Object.keys(args);
+    return keys.length ? `${keys.length} arg(s)` : "";
+}
+
+function WebMcpActivityPanel({ identity, events, onClear }) {
+    const scrollRef = useRef(null);
+    useEffect(() => {
+        const el = scrollRef.current;
+        if (el) el.scrollTop = el.scrollHeight;
+    }, [events.length]);
+
+    const name = identity?.name || "Connected agent";
+
+    return (
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", background: "var(--bg-surface)" }}>
+            {/* Identity header */}
+            <div
+                style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    padding: "12px 14px",
+                    borderBottom: "1px solid var(--border)",
+                    flexShrink: 0,
+                }}
+            >
+                <div
+                    style={{
+                        width: 30,
+                        height: 30,
+                        borderRadius: "50%",
+                        overflow: "hidden",
+                        flexShrink: 0,
+                        background: "var(--accent-dim)",
+                        color: "var(--accent)",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        fontSize: 11,
+                        fontWeight: 700,
+                        fontFamily: "Syne, sans-serif",
+                    }}
+                >
+                    {identity?.avatar ? (
+                        <img
+                            src={identity.avatar}
+                            alt={name}
+                            style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+                        />
+                    ) : (
+                        initialsOf(identity?.name)
+                    )}
+                </div>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                    <div
+                        style={{
+                            fontSize: 12.5,
+                            fontWeight: 700,
+                            color: "var(--text-primary)",
+                            fontFamily: "Syne, sans-serif",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                        }}
+                    >
+                        {name}
+                    </div>
+                    <div style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "DM Mono, monospace" }}>
+                        {events.length ? `${events.length} tool call${events.length === 1 ? "" : "s"}` : "waiting for tool calls…"}
+                    </div>
+                </div>
+                {events.length > 0 && (
+                    <button
+                        onClick={onClear}
+                        style={{
+                            background: "none",
+                            border: "1px solid var(--border)",
+                            borderRadius: 6,
+                            color: "var(--text-muted)",
+                            fontSize: 10,
+                            padding: "3px 8px",
+                            cursor: "pointer",
+                            fontFamily: "Syne, sans-serif",
+                        }}
+                    >
+                        Clear
+                    </button>
+                )}
+            </div>
+
+            {/* Event feed */}
+            <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", padding: "10px 12px" }}>
+                {events.length === 0 ? (
+                    <div
+                        style={{
+                            marginTop: 40,
+                            textAlign: "center",
+                            color: "var(--text-muted)",
+                            fontSize: 12,
+                            fontFamily: "Syne, sans-serif",
+                            padding: "0 20px",
+                            lineHeight: 1.6,
+                        }}
+                    >
+                        Tool calls from AI agents connected to this page (via WebMCP)
+                        appear here as they happen.
+                    </div>
+                ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                        {events.map((e) => {
+                            const dotColor =
+                                e.status === "error"
+                                    ? "var(--red)"
+                                    : e.status === "running"
+                                      ? "var(--accent)"
+                                      : "var(--green)";
+                            const argSummary = summarizeArgs(e.args);
+                            return (
+                                <div
+                                    key={e.id}
+                                    className="ai-tool-enter"
+                                    style={{
+                                        display: "flex",
+                                        alignItems: "flex-start",
+                                        gap: 8,
+                                        padding: "6px 8px",
+                                        borderRadius: 7,
+                                        border: "1px solid var(--border)",
+                                        background: "var(--bg-raised)",
+                                    }}
+                                >
+                                    <span
+                                        style={{
+                                            width: 7,
+                                            height: 7,
+                                            borderRadius: "50%",
+                                            marginTop: 4,
+                                            flexShrink: 0,
+                                            background: dotColor,
+                                            animation:
+                                                e.status === "running"
+                                                    ? "aiPulse 1.2s infinite"
+                                                    : "none",
+                                        }}
+                                    />
+                                    <div style={{ minWidth: 0, flex: 1 }}>
+                                        <div
+                                            style={{
+                                                fontSize: 12,
+                                                color: "var(--text-primary)",
+                                                fontFamily: "Syne, sans-serif",
+                                                fontWeight: 600,
+                                            }}
+                                        >
+                                            {getToolLabel(e.name)}
+                                            {e.status === "running" ? "…" : ""}
+                                        </div>
+                                        <div
+                                            style={{
+                                                fontSize: 10,
+                                                color: "var(--text-muted)",
+                                                fontFamily: "DM Mono, monospace",
+                                                overflow: "hidden",
+                                                textOverflow: "ellipsis",
+                                                whiteSpace: "nowrap",
+                                            }}
+                                        >
+                                            {e.name}
+                                            {argSummary ? ` · ${argSummary}` : ""}
+                                        </div>
+                                        {e.status === "error" && e.error && (
+                                            <div style={{ fontSize: 10, color: "var(--red)", marginTop: 2 }}>
+                                                {String(e.error).slice(0, 120)}
+                                            </div>
+                                        )}
+                                    </div>
+                                    <span
+                                        style={{
+                                            fontSize: 9,
+                                            color: "var(--text-muted)",
+                                            fontFamily: "DM Mono, monospace",
+                                            flexShrink: 0,
+                                            marginTop: 3,
+                                        }}
+                                    >
+                                        {new Date(e.at).toLocaleTimeString([], {
+                                            hour: "2-digit",
+                                            minute: "2-digit",
+                                            second: "2-digit",
+                                        })}
+                                    </span>
+                                </div>
+                            );
+                        })}
+                    </div>
+                )}
+            </div>
         </div>
     );
 }

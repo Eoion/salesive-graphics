@@ -44,6 +44,11 @@ const TOOL_PHASE_MAP = {
   send_to_back: 'editing',
   insert_collection_item: 'editing',
   agent_thought: 'thinking',
+  get_editor_guide: 'reading',
+  lock_canvas: 'thinking',
+  unlock_canvas: 'thinking',
+  ask_canvas_question: 'thinking',
+  set_agent_identity: 'thinking',
 };
 
 function shortenThought(value) {
