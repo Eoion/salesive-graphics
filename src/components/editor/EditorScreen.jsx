@@ -7,6 +7,7 @@ import { useEditorInteractions } from "../../editor/useEditorInteractions.js";
 import { useKeymap } from "../../editor/useKeymap.js";
 import { useEditorDefs } from "../../editor/useEditorDefs.js";
 import { useEditorAgent } from "../../editor/useEditorAgent.js";
+import { useWebMCP } from "../../editor/useWebMCP.js";
 import { useAiAnimations } from "../../editor/useAiAnimations.js";
 import { serializeElements } from "../../editor/serializeElements.js";
 import { parseSVGToElements } from "../../editor/parseSVGToElements.js";
@@ -726,7 +727,31 @@ function buildRegionReview(elements, region, canvasSize, goals = []) {
     };
 }
 
+const GUEST_GROUPS_KEY = "salesive_editor_groups";
+
+function loadGuestGroups() {
+    try {
+        const raw = localStorage.getItem(GUEST_GROUPS_KEY);
+        if (raw) {
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === "object") return parsed;
+        }
+    } catch {
+        /* ignore malformed persisted groups */
+    }
+    return {};
+}
+
+function storeGuestGroups(groups) {
+    try {
+        localStorage.setItem(GUEST_GROUPS_KEY, JSON.stringify(groups || {}));
+    } catch {
+        /* storage may be full or unavailable */
+    }
+}
+
 export default function EditorScreen({
+    isGuest = false,
     canvasSize,
     onCanvasResize,
     onFinish,
@@ -739,7 +764,7 @@ export default function EditorScreen({
     onCanvasesRefresh,
 }) {
     const [activeTool, setActiveTool] = useState("select");
-    const [activeDock, setActiveDock] = useState("ai");
+    const [activeDock, setActiveDock] = useState(isGuest ? "properties" : "ai");
     const [showCommandPalette, setShowCommandPalette] = useState(false);
     const [showKeymap, setShowKeymap] = useState(false);
     const [showCollection, setShowCollection] = useState(false);
@@ -768,7 +793,15 @@ export default function EditorScreen({
     const [isPublic, setIsPublic] = useState(canvasRecord?.public ?? true);
     const [collectionItems, setCollectionItems] = useState([]);
     const [collectionsLoading, setCollectionsLoading] = useState(false);
-    const [groups, setGroups] = useState(() => canvasRecord?.groups || {});
+    const [groups, setGroups] = useState(
+        () => canvasRecord?.groups || (isGuest ? loadGuestGroups() : {}),
+    );
+
+    // Guests have no backend record — persist groups alongside the elements/defs
+    // that useEditorState / useEditorDefs already back up to localStorage.
+    useEffect(() => {
+        if (isGuest) storeGuestGroups(groups);
+    }, [isGuest, groups]);
     const groupCounterRef = useRef(0);
 
     // Component-level group helpers (stable callbacks usable outside clientToolHandlers)
@@ -928,6 +961,13 @@ export default function EditorScreen({
     );
 
     const handleManualSave = useCallback(async () => {
+        if (isGuest) {
+            // No cloud account — work is already mirrored to localStorage.
+            storeGuestGroups(groups);
+            setSaveState({ status: "saved", updatedAt: new Date().toISOString() });
+            toast.success("Saved locally on this device");
+            return;
+        }
         try {
             setSaveState((prev) => ({ ...prev, status: "saving" }));
             const response = await canvases.saveCanvas(await buildCanvasPayload());
@@ -940,9 +980,21 @@ export default function EditorScreen({
             setSaveState((prev) => ({ ...prev, status: "error" }));
             toast.error("Could not save canvas");
         }
-    }, [buildCanvasPayload, onCanvasesRefresh, refreshCanvasRecord]);
+    }, [buildCanvasPayload, groups, isGuest, onCanvasesRefresh, refreshCanvasRecord]);
 
     useEffect(() => {
+        if (isGuest) {
+            // Guest auto-save: elements/defs/groups persist to localStorage on
+            // change; just reflect that in the save indicator.
+            if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+            autoSaveTimerRef.current = setTimeout(() => {
+                storeGuestGroups(groups);
+                setSaveState({ status: "saved", updatedAt: new Date().toISOString() });
+            }, 1800);
+            return () => {
+                if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+            };
+        }
         if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
         autoSaveTimerRef.current = setTimeout(async () => {
             try {
@@ -959,7 +1011,7 @@ export default function EditorScreen({
             if (autoSaveTimerRef.current)
                 clearTimeout(autoSaveTimerRef.current);
         };
-    }, [buildCanvasPayload, refreshCanvasRecord]);
+    }, [buildCanvasPayload, groups, isGuest, refreshCanvasRecord]);
 
     useEffect(() => {
         if (!showExportMenu) return;
@@ -6405,7 +6457,11 @@ export default function EditorScreen({
     const agentRef = useEditorAgent({
         getEditorContext: buildEditorContext,
         clientToolHandlers,
+        enabled: !isGuest,
     });
+
+    // Expose every tool Ola uses to external AI agents via the WebMCP API.
+    useWebMCP(clientToolHandlers);
     const { agentCursor } = agentRef;
 
     // ── Typewriter status for Ola overlay ─────────────────────────────────────
@@ -7262,12 +7318,16 @@ export default function EditorScreen({
                                 icon: ICONS.layers,
                                 label: "Properties",
                             },
-                            {
-                                key: "ai",
-                                icon: ICONS.ai,
-                                label: "Ola",
-                                indicator: agentCursor.visible,
-                            },
+                            ...(isGuest
+                                ? []
+                                : [
+                                      {
+                                          key: "ai",
+                                          icon: ICONS.ai,
+                                          label: "Ola",
+                                          indicator: agentCursor.visible,
+                                      },
+                                  ]),
                         ].map((tab) => (
                             <button
                                 key={tab.key}
@@ -7333,7 +7393,7 @@ export default function EditorScreen({
                             flexDirection: "column",
                         }}
                     >
-                        {activeDock === "properties" ? (
+                        {isGuest || activeDock === "properties" ? (
                             <EditorPropertiesPanel
                                 elements={elements}
                                 selectedId={selectedId}

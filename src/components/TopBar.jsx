@@ -190,6 +190,17 @@ export default function TopBar({
           </button>
         )}
 
+        {!hasAuthenticatedUser && onNavigate && mode !== 'login' && (
+          <button onClick={() => onNavigate('login')}
+            style={{
+              padding: '4px 12px', borderRadius: 6, border: 'none',
+              background: 'var(--accent)', color: '#fff',
+              fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: 'Syne, sans-serif',
+            }}>
+            Sign in
+          </button>
+        )}
+
         {hasAuthenticatedUser && (
           <div ref={userMenuRef} style={{ position: 'relative' }}>
             <button

@@ -124,10 +124,10 @@ export function clearStoredEditorAiSession() {
   try { localStorage.removeItem(EDITOR_AI_CONVERSATION_KEY); } catch {}
 }
 
-export function useEditorAgent({ getEditorContext, clientToolHandlers = {} } = {}) {
+export function useEditorAgent({ getEditorContext, clientToolHandlers = {}, enabled = true } = {}) {
   const serverUrl = import.meta.env.VITE_EDITOR_AI_URL || '';
   const namespace = import.meta.env.VITE_EDITOR_AI_NAMESPACE || DEFAULT_NAMESPACE;
-  const isConfigured = Boolean(serverUrl);
+  const isConfigured = enabled && Boolean(serverUrl);
 
   const [conversationId, setConversationId] = useState(loadConversationId);
   const [messages, setMessages] = useState([]);

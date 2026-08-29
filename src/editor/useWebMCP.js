@@ -1,0 +1,161 @@
+// WebMCP bridge: exposes every editor tool that "Ola" (the in-app AI assistant)
+// can call to external AI agents via the W3C Web Model Context API.
+//
+// It registers each entry of `clientToolHandlers` (the same map passed to
+// useEditorAgent) as a WebMCP tool on `document.modelContext`, so browser
+// agents / extensions that speak WebMCP can drive the SVG editor with the exact
+// same capabilities as the built-in assistant.
+
+import { useEffect, useRef } from 'react';
+import '@mcp-b/global'; // side-effect: polyfills document.modelContext when absent
+
+// Human-readable descriptions for the tools whose purpose isn't obvious from the
+// name. Anything not listed here falls back to a generated description.
+const TOOL_DESCRIPTIONS = {
+  get_canvas_state: 'Get the full canvas state: size, defs, all elements and groups.',
+  list_elements: 'List every element on the canvas with its id, type and bounds.',
+  get_element: 'Get a single element by id, including all of its properties. Args: { id }.',
+  get_snapshot: 'Get a compact snapshot of the canvas (size + elements) for quick reasoning.',
+  get_selected_elements: 'Get the currently selected element(s).',
+  take_screenshot: 'Capture a PNG screenshot of the whole canvas.',
+  get_canvas_screenshot: 'Capture a PNG screenshot of the canvas. Optional args control scale/format.',
+  get_element_screenshot: 'Capture a PNG screenshot cropped to one element. Args: { id }.',
+  get_region_screenshot: 'Capture a PNG screenshot of a rectangular region. Args: { x, y, width, height }.',
+  review_canvas_region: 'Render a region and return it for visual review. Args: { x, y, width, height }.',
+  find_text_elements: 'Find text elements matching a query string. Args: { query, caseSensitive?, regex? }.',
+  measure_elements: 'Return the combined bounding box and per-element metrics. Args: { ids }.',
+  check_layout: 'Analyse the layout for overflow, overlaps and out-of-bounds elements.',
+  estimate_text: 'Estimate the rendered width/height of a text string. Args: { text, fontSize, fontFamily?, width? }.',
+  list_collection_items: 'List saved collection items available to insert.',
+  get_collection_item: 'Get one collection item by id. Args: { id }.',
+  insert_collection_item: 'Insert a saved collection item onto the canvas. Args: { id, x?, y? }.',
+  save_to_collection: 'Save the given elements as a reusable collection item. Args: { ids, name? }.',
+  create_group: 'Group elements together. Args: { ids, name? }.',
+  add_to_group: 'Add elements to an existing group. Args: { groupId, ids }.',
+  remove_from_group: 'Remove elements from a group. Args: { groupId, ids }.',
+  dissolve_group: 'Ungroup a group, keeping its elements. Args: { groupId }.',
+  rename_group: 'Rename a group. Args: { groupId, name }.',
+  list_groups: 'List all groups and their member element ids.',
+  get_group: 'Get one group with its members. Args: { groupId }.',
+  undo_last_action: 'Undo the last editor action.',
+  redo_last_action: 'Redo the last undone editor action.',
+  select_element: 'Select a single element. Args: { id }.',
+  select_elements: 'Select multiple elements. Args: { ids }.',
+  update_element: 'Patch properties of one element. Args: { id, ...properties }.',
+  update_elements: 'Patch the same properties across many elements. Args: { ids, patch }.',
+  set_fill: 'Set an element fill colour. Args: { id, fill }.',
+  set_stroke: 'Set an element stroke colour/width. Args: { id, stroke, strokeWidth? }.',
+  set_opacity: 'Set an element opacity (0-1). Args: { id, opacity }.',
+  set_text: 'Set the text content (and optional text props) of a text element. Args: { id, text, ... }.',
+  batch_update_texts: 'Update the text of many text elements at once. Args: { updates: [{ id, text }] }.',
+  move_element: 'Move an element to an absolute position. Args: { id, x, y }.',
+  resize_element: 'Resize an element. Args: { id, width, height }.',
+  lock_element: 'Lock an element against editing. Args: { id, locked? }.',
+  unlock_element: 'Unlock an element. Args: { id }.',
+  hide_element: 'Hide an element. Args: { id }.',
+  show_element: 'Show a hidden element. Args: { id }.',
+  delete_element: 'Delete one element. Args: { id }.',
+  delete_elements: 'Delete multiple elements. Args: { ids }.',
+  add_element: 'Add a single new element. Args: { type, ...properties }.',
+  add_elements: 'Add multiple new elements at once. Args: { elements }.',
+  duplicate_element: 'Duplicate one element. Args: { id }.',
+  duplicate_elements: 'Duplicate multiple elements with an offset. Args: { ids, offset?, dx?, dy? }.',
+  add_icon: 'Add an icon image element. Args: { name/icon, x?, y?, size?, color? }.',
+  bring_forward: 'Move an element up one step in the z-order. Args: { id, steps? }.',
+  send_backward: 'Move an element down one step in the z-order. Args: { id, steps? }.',
+  bring_to_front: 'Move an element to the top of the z-order. Args: { id }.',
+  send_to_back: 'Move an element to the bottom of the z-order. Args: { id }.',
+  fix_elements: 'Auto-fix common issues (NaN coords, zero sizes, etc). Args: { ids? }.',
+  align_elements: 'Align elements to an edge or centre. Args: { ids, alignment, ... }.',
+  distribute_elements: 'Distribute elements evenly. Args: { ids, axis, ... }.',
+  constrain_elements: 'Keep elements inside the canvas with padding. Args: { ids?, padding?, ignoreIds? }.',
+  arrange_row: 'Lay elements out in a horizontal row. Args: { ids, x?, y?, gap?, alignment? }.',
+  arrange_column: 'Lay elements out in a vertical column. Args: { ids, x?, y?, gap?, alignment? }.',
+  arrange_grid: 'Lay elements out in a grid. Args: { ids, x?, y?, columns?, colGap?, rowGap? }.',
+  align_grid: 'Snap elements onto a grid alignment. Args: { ids, ... }.',
+  snap_to_grid: 'Snap element positions (and optionally sizes) to a grid. Args: { ids?, gridSize?, snapSize? }.',
+  align_to_element: 'Align elements relative to a reference element. Args: { ids, targetId, edge }.',
+  fit_frame_around: 'Resize/position a frame element to wrap the given elements. Args: { frameId, ids, padding? }.',
+  center_in_canvas: 'Centre elements within the canvas. Args: { ids, axis? }.',
+  place_at: 'Place an element at a canvas anchor. Args: { id, anchor?, margin? }.',
+  stack_center: 'Stack elements centred on a point. Args: { ids, cx?, cy?, preserveRelative? }.',
+  load_font: 'Load a Google font and optionally apply it. Args: { fontFamily, ids?, applyToAll? }.',
+  resize_canvas: 'Resize the canvas. Args: { width, height, constrain? }.',
+  insert_svg: 'Parse and insert raw SVG markup. Args: { svg, placement? }.',
+  replace_defs: 'Replace the canvas <defs> (gradients, filters, fonts). Args: { defs }.',
+  set_template_name: 'Set the template / document name. Args: { name }.',
+};
+
+function humanize(name) {
+  const base = name.replace(/^editor\./, '').replace(/_/g, ' ');
+  if (name.startsWith('create_')) {
+    return `Create a ${base.replace(/^create /, '')} component on the canvas.`;
+  }
+  return base.charAt(0).toUpperCase() + base.slice(1) + '.';
+}
+
+function describe(name) {
+  return TOOL_DESCRIPTIONS[name] || humanize(name);
+}
+
+function toContent(result) {
+  const text = typeof result === 'string' ? result : JSON.stringify(result ?? null);
+  const out = { content: [{ type: 'text', text }] };
+  if (result && typeof result === 'object') out.structuredContent = result;
+  return out;
+}
+
+/**
+ * Registers every editor tool with the WebMCP runtime for the lifetime of the
+ * component. `clientToolHandlers` is the map returned by EditorScreen (the same
+ * object handed to useEditorAgent). Aliased `editor.*` duplicates are skipped.
+ */
+export function useWebMCP(clientToolHandlers, { enabled = true } = {}) {
+  // Keep the latest handler map in a ref so registered tools always call the
+  // current closure without needing to re-register on every render.
+  const handlersRef = useRef(clientToolHandlers);
+  useEffect(() => { handlersRef.current = clientToolHandlers; }, [clientToolHandlers]);
+
+  useEffect(() => {
+    if (!enabled) return;
+    const modelContext = typeof document !== 'undefined' ? document.modelContext : null;
+    if (!modelContext?.registerTool) {
+      console.warn('[WebMCP] document.modelContext unavailable; editor tools not exposed.');
+      return;
+    }
+
+    const controller = new AbortController();
+    const names = Object.keys(clientToolHandlers || {}).filter((n) => !n.startsWith('editor.'));
+
+    for (const name of names) {
+      try {
+        const maybePromise = modelContext.registerTool(
+          {
+            name,
+            description: describe(name),
+            inputSchema: { type: 'object', properties: {}, additionalProperties: true },
+            async execute(args) {
+              const handler = handlersRef.current?.[name];
+              if (!handler) throw new Error(`No handler for tool "${name}"`);
+              try {
+                return toContent(await handler(args || {}));
+              } catch (err) {
+                return {
+                  content: [{ type: 'text', text: `Error: ${err?.message || String(err)}` }],
+                  isError: true,
+                };
+              }
+            },
+          },
+          { signal: controller.signal },
+        );
+        if (maybePromise?.catch) maybePromise.catch((e) => console.warn('[WebMCP] registerTool failed', name, e));
+      } catch (e) {
+        console.warn('[WebMCP] registerTool threw', name, e);
+      }
+    }
+
+    console.info(`[WebMCP] exposed ${names.length} editor tools to AI agents.`);
+    return () => controller.abort();
+  }, [enabled, clientToolHandlers]);
+}

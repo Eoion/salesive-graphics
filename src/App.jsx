@@ -98,9 +98,10 @@ export default function App() {
           navigate('upload');
         }
       } catch {
+        // Guest mode: no valid session. Let the user keep working locally
+        // instead of forcing them to the login screen.
         setUser(null);
         clearSessionKeys(['token', 'user']);
-        if (mode !== 'login') navigate('login');
       } finally {
         setAuthLoading(false);
       }
@@ -211,10 +212,11 @@ export default function App() {
     await refreshSavedCanvases();
   }, [activeCanvasRecord?._id, refreshSavedCanvases]);
 
-  function seedEditorStorage(elements = [], defs = {}) {
+  function seedEditorStorage(elements = [], defs = {}, groups = {}) {
     try {
       localStorage.setItem('salesive_editor', JSON.stringify(elements));
       localStorage.setItem('salesive_defs', JSON.stringify(defs));
+      localStorage.setItem('salesive_editor_groups', JSON.stringify(groups || {}));
     } catch (error) {
       ignoreStorageError(error);
     }
@@ -223,6 +225,7 @@ export default function App() {
   // ── Handlers ──────────────────────────────────────────────────────────────────
   function handleUpload(svgText, filename) {
     localStorage.removeItem('salesive_editor_viewport');
+    localStorage.removeItem('salesive_editor_groups');
     const { elements, canvasSize: cs } = parseSVGToElements(svgText);
     setCanvasSize(cs);
     setUploadedElements(elements);
@@ -275,7 +278,7 @@ export default function App() {
       name: isOwnedCanvas ? (canvas.name || 'Untitled Template') : `${canvas.name || 'Untitled Template'} Copy`,
     });
     setActiveCanvasRecord(isOwnedCanvas ? canvas : null);
-    seedEditorStorage(Array.isArray(canvas.elements) ? canvas.elements : [], canvas.defs || {});
+    seedEditorStorage(Array.isArray(canvas.elements) ? canvas.elements : [], canvas.defs || {}, canvas.groups || {});
     localStorage.removeItem('salesive_editor_viewport');
     navigate('editor');
   }
@@ -332,6 +335,7 @@ export default function App() {
     setPendingImageUploads([]);
     localStorage.removeItem('salesive_editor');
     localStorage.removeItem('salesive_defs');
+    localStorage.removeItem('salesive_editor_groups');
     localStorage.removeItem('salesive_editor_viewport');
     setSvgString(null);
     setParsed(null);
@@ -389,15 +393,8 @@ export default function App() {
 
       {!authLoading && mode === 'login' && <LoginScreen error={routeError} />}
 
-      {!authLoading && mode !== 'login' && !user && (
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 20 }}>
-          <p style={{ color: 'var(--text-secondary)' }}>You are not signed in.</p>
-          <button onClick={() => navigate('login')} style={{ padding: '8px 16px', background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer' }}>Go to Login</button>
-        </div>
-      )}
-
-      {/* Main Apps - Only if logged in */}
-      {!authLoading && user && (
+      {/* Main Apps - available to signed-in users and guests (guests save locally) */}
+      {!authLoading && mode !== 'login' && (
         <>
           {/* Upload */}
           {mode === 'upload' && (
@@ -418,6 +415,7 @@ export default function App() {
                     localStorage.removeItem('salesive_editor_viewport');
                     localStorage.removeItem('salesive_editor');
                     localStorage.removeItem('salesive_defs');
+                    localStorage.removeItem('salesive_editor_groups');
                     setCanvasSize(size);
                     setUploadedElements([]);
                     setEditorDefsSeed({});
@@ -435,6 +433,7 @@ export default function App() {
           {/* Editor — used for both new canvas AND uploaded SVGs */}
           {mode === 'editor' && canvasSize && (
             <EditorScreen
+              isGuest={!user}
               canvasSize={canvasSize}
               onCanvasResize={setCanvasSize}
               onFinish={handleEditorFinish}
