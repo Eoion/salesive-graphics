@@ -26,6 +26,28 @@ function storeElements(els) {
   try { localStorage.setItem(LS_KEY, JSON.stringify(els)); } catch {}
 }
 
+// Coordinates arriving as strings ("96") silently corrupt any arithmetic the
+// renderer does (text baseline = y + fontSize, circle centre, line endpoints).
+// Coerce known numeric fields on every write so bad data never persists.
+const NUMERIC_ELEMENT_FIELDS = [
+  'x', 'y', 'width', 'height', 'rx', 'ry', 'r', 'cx', 'cy',
+  'x1', 'y1', 'x2', 'y2', 'fontSize', 'strokeWidth', 'opacity', 'rotation',
+  'lineHeight', 'letterSpacing',
+];
+
+function coerceElementNumbers(obj) {
+  if (!obj || typeof obj !== 'object') return obj;
+  let out = obj;
+  for (const key of NUMERIC_ELEMENT_FIELDS) {
+    const v = obj[key];
+    if (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v))) {
+      if (out === obj) out = { ...obj };
+      out[key] = Number(v);
+    }
+  }
+  return out;
+}
+
 export function useEditorState(initialElements) {
   const [elements, setElementsState] = useState(() => {
     if (Array.isArray(initialElements)) {
@@ -111,16 +133,18 @@ export function useEditorState(initialElements) {
   }, [commit, syncHistory]);
 
   const addElement = useCallback((el) => {
-    const next = [...elementsRef.current, el];
+    const clean = coerceElementNumbers(el);
+    const next = [...elementsRef.current, clean];
     commit(next);
-    applySelection(el.id, [el.id]);
+    applySelection(clean.id, [clean.id]);
   }, [commit, applySelection]);
 
   const addElements = useCallback((els) => {
     if (!els.length) return;
-    const next = [...elementsRef.current, ...els];
+    const clean = els.map(coerceElementNumbers);
+    const next = [...elementsRef.current, ...clean];
     commit(next);
-    applySelection(els[els.length - 1].id, els.map(e => e.id));
+    applySelection(clean[clean.length - 1].id, clean.map(e => e.id));
   }, [commit, applySelection]);
 
   const updateElementLive = useCallback((id, patch) => {
@@ -133,13 +157,15 @@ export function useEditorState(initialElements) {
   }, [setElements]);
 
   const updateElement = useCallback((id, patch) => {
-    const next = elementsRef.current.map(el => el.id === id ? { ...el, ...patch } : el);
+    const p = coerceElementNumbers(patch);
+    const next = elementsRef.current.map(el => el.id === id ? { ...el, ...p } : el);
     commit(next);
   }, [commit]);
 
   // Batch update multiple elements with the same patch
   const updateElements = useCallback((ids, patch) => {
-    const next = elementsRef.current.map(el => ids.includes(el.id) ? { ...el, ...patch } : el);
+    const p = coerceElementNumbers(patch);
+    const next = elementsRef.current.map(el => ids.includes(el.id) ? { ...el, ...p } : el);
     commit(next);
   }, [commit]);
 
@@ -238,6 +264,7 @@ export function useEditorState(initialElements) {
 
   return {
     elements,
+    elementsRef, // always-current; read this in async tool handlers to avoid stale closures
     selectedId, selectedIds,
     setSelectedId, setPrimarySelectedId, setSelectedIds, toggleSelectedId,
     canUndo: historySize.past > 0,

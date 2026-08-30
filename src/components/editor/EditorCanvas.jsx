@@ -321,6 +321,7 @@ function ElementRenderer({ el }) {
     switch (el.type) {
         case "rect":    return <RenderRect    el={el} />;
         case "circle":  return <RenderCircle  el={el} />;
+        case "ellipse": return <RenderCircle  el={el} />;
         case "text":    return <RenderText    el={el} />;
         case "image":   return <RenderImage   el={el} />;
         case "line":    return <RenderLine    el={el} />;

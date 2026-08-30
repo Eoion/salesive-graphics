@@ -21,6 +21,7 @@ import { syncCounter, freshId, claimId } from "../../editor/editorConstants.js";
 import EditorToolbar from "./EditorToolbar.jsx";
 import EditorCanvas from "./EditorCanvas.jsx";
 import EditorAiChat, { uploadImageToStore, getToolLabel } from "./EditorAiChat.jsx";
+import { resolveLucideIconHref } from "../../editor/lucideIconSvg.js";
 import EditorPropertiesPanel from "./EditorPropertiesPanel.jsx";
 import LayersPanel from "./LayersPanel.jsx";
 import CommandPalette from "./CommandPalette.jsx";
@@ -255,6 +256,39 @@ async function fetchAsDataUrl(url) {
     });
 }
 
+function arrayBufferToBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+        binary += String.fromCharCode.apply(
+            null,
+            bytes.subarray(i, i + chunk),
+        );
+    }
+    return btoa(binary);
+}
+
+// Fetch a Google font and return a base64 woff2 data URL so it can be embedded
+// as an @font-face — external @import doesn't load when the export SVG is
+// rasterized through an <img>, so display faces would otherwise fall back.
+async function inlineGoogleFont(family, weights = [700, 400]) {
+    const q =
+        `family=${encodeURIComponent(family)}:wght@${weights.join(";")}` +
+        `&display=swap`;
+    const css = await fetch(`https://fonts.googleapis.com/css2?${q}`).then((r) => {
+        if (!r.ok) throw new Error(`font css ${r.status}`);
+        return r.text();
+    });
+    const urlMatch = css.match(/url\((https:\/\/[^)]+\.woff2)\)/);
+    if (!urlMatch) return null;
+    const buf = await fetch(urlMatch[1]).then((r) => {
+        if (!r.ok) throw new Error(`font file ${r.status}`);
+        return r.arrayBuffer();
+    });
+    return `data:font/woff2;base64,${arrayBufferToBase64(buf)}`;
+}
+
 async function inlineExternalImages(svgString) {
     // Collect all unique external URLs referenced in href / xlink:href attributes
     const pattern = /(?:xlink:)?href="(https?:\/\/[^"]+)"/g;
@@ -399,12 +433,18 @@ function clampRegionToCanvas(region, canvasSize) {
     };
 }
 
+// Coerce a possibly-stringified numeric field ("96") to a real number.
+function nn(value, fallback = 0) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+}
+
 function getElementBounds(el, padding = 0) {
     return {
-        x: (el?.x ?? 0) - padding,
-        y: (el?.y ?? 0) - padding,
-        width: (el?.width ?? 0) + padding * 2,
-        height: (el?.height ?? 0) + padding * 2,
+        x: nn(el?.x) - padding,
+        y: nn(el?.y) - padding,
+        width: nn(el?.width) + padding * 2,
+        height: nn(el?.height) + padding * 2,
     };
 }
 
@@ -479,17 +519,135 @@ function makeTextPatch(baseElement, {
     };
 }
 
+const _finiteNum = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+
+// Normalize a loosely-specified agent element into the editor's flat schema:
+// a top-left x/y box with width/height. Accepts SVG-style geometry
+// (cx/cy/r/rx/ry for discs, x1/y1/x2/y2 for lines) and coerces `ellipse` to
+// `circle` (which already renders as an <ellipse> and supports width != height).
+function normalizeAgentElement(raw) {
+    const e = { ...raw };
+    if (e.type === "ellipse") e.type = "circle";
+
+    if (e.type === "circle") {
+        const rx =
+            _finiteNum(e.rx) ??
+            _finiteNum(e.r) ??
+            (_finiteNum(e.width) != null ? e.width / 2 : null);
+        const ry =
+            _finiteNum(e.ry) ??
+            _finiteNum(e.r) ??
+            (_finiteNum(e.height) != null ? e.height / 2 : null);
+        const w = (rx != null ? rx * 2 : null) ?? _finiteNum(e.width) ?? 100;
+        const h = (ry != null ? ry * 2 : null) ?? _finiteNum(e.height) ?? 100;
+        const x =
+            _finiteNum(e.x) ??
+            (_finiteNum(e.cx) != null ? e.cx - w / 2 : null);
+        const y =
+            _finiteNum(e.y) ??
+            (_finiteNum(e.cy) != null ? e.cy - h / 2 : null);
+        e.width = w;
+        e.height = h;
+        if (x != null) e.x = x;
+        if (y != null) e.y = y;
+        delete e.cx;
+        delete e.cy;
+        delete e.r;
+        delete e.rx;
+        delete e.ry;
+    } else if (e.type === "line" || e.type === "arrow") {
+        const x1 = _finiteNum(e.x1) ?? _finiteNum(e.x) ?? 0;
+        const y1 = _finiteNum(e.y1) ?? _finiteNum(e.y) ?? 0;
+        const x2 =
+            _finiteNum(e.x2) ??
+            (_finiteNum(e.x) ?? 0) + (_finiteNum(e.width) ?? 0);
+        const y2 =
+            _finiteNum(e.y2) ??
+            (_finiteNum(e.y) ?? 0) + (_finiteNum(e.height) ?? 0);
+        e.x = x1;
+        e.y = y1;
+        e.width = x2 - x1;
+        e.height = y2 - y1;
+        e.x1 = x1;
+        e.y1 = y1;
+        e.x2 = x2;
+        e.y2 = y2;
+    }
+
+    if (e.type === "text") {
+        e.fontFamily = resolveFontFamily(e.fontFamily);
+        const hasWidth = _finiteNum(e.width) != null;
+        // Only hard-wrap into a column when the caller explicitly picked a width;
+        // otherwise auto-fit so short agent labels are always visible.
+        const wrap = e.textWrap ?? hasWidth;
+        Object.assign(
+            e,
+            makeTextPatch(e, {
+                text: e.text ?? "Text",
+                width: hasWidth ? e.width : undefined,
+                fontSize: e.fontSize,
+                lineHeight: e.lineHeight,
+                textWrap: wrap,
+                autoFitWidth: !hasWidth,
+            }),
+        );
+    }
+    return e;
+}
+
+// Map a loose gradient spec (numbers or "%" strings, `color`/`stop-color`
+// aliases) onto the internal defs.gradients shape.
+function normalizeGradientInput(input = {}) {
+    const pct = (v, fallback) => {
+        if (v == null) return fallback;
+        if (typeof v === "number") return Number.isFinite(v) ? `${v}%` : fallback;
+        return String(v);
+    };
+    const stops = (Array.isArray(input.stops) ? input.stops : [])
+        .map((s, i, arr) => ({
+            offset: pct(
+                s.offset,
+                `${Math.round((i / Math.max(arr.length - 1, 1)) * 100)}%`,
+            ),
+            stopColor:
+                s.stopColor || s.color || s["stop-color"] || s.stopcolor || "#000000",
+            ...(s.stopOpacity != null || s["stop-opacity"] != null
+                ? { stopOpacity: Number(s.stopOpacity ?? s["stop-opacity"]) }
+                : {}),
+        }));
+    const id = String(input.id || "").trim() || `grad_${Date.now()}`;
+    if (String(input.type).toLowerCase() === "radial") {
+        return {
+            id,
+            type: "radial",
+            cx: pct(input.cx, "50%"),
+            cy: pct(input.cy, "50%"),
+            r: pct(input.r, "50%"),
+            stops,
+        };
+    }
+    return {
+        id,
+        type: "linear",
+        x1: pct(input.x1, "0%"),
+        y1: pct(input.y1, "0%"),
+        x2: pct(input.x2, "100%"),
+        y2: pct(input.y2, "0%"),
+        stops,
+    };
+}
+
 // Returns the actual rendered left-edge x for a text element, adjusting for textAnchor.
 // Non-text elements return their raw x.
 function effectiveTextBounds(el) {
-    const w = el.width || 0;
-    const h = el.height || 0;
-    let x = el.x || 0;
+    const w = nn(el.width);
+    const h = nn(el.height);
+    let x = nn(el.x);
     if (el.type === 'text' && w > 0) {
         if (el.textAnchor === 'middle') x = x - w / 2;
         else if (el.textAnchor === 'end')  x = x - w;
     }
-    return { x, y: el.y || 0, width: w, height: h };
+    return { x, y: nn(el.y), width: w, height: h };
 }
 
 function xFromRenderedLeft(el, left) {
@@ -733,11 +891,13 @@ const GUEST_GROUPS_KEY = "salesive_editor_groups";
 // learn how to drive this editor before it starts making changes.
 const EDITOR_GUIDE = `# Salesive SVG Editor — agent guide
 
-You are editing a fixed-size SVG canvas made of flat elements (rect, text,
-image/icon, line, path). Elements have an \`id\`, a position (\`x\`,\`y\` = top-left),
-a size (\`width\`,\`height\`), plus style props (\`fill\`, \`stroke\`, \`strokeWidth\`,
-\`opacity\`, \`rx\`). Text elements also have \`text\`, \`fontSize\`, \`fontFamily\`,
-\`fontWeight\`, \`textAnchor\`, \`lineHeight\`, \`textWrap\`.
+You are editing a fixed-size SVG canvas made of flat elements: rect, text,
+image/icon, line, path, circle (also "ellipse" — same type, width != height),
+polygon, star, arrow. Every element has an \`id\`, a top-left position
+(\`x\`, \`y\` — numbers, not strings), a size (\`width\`, \`height\`), plus style props
+(\`fill\`, \`stroke\`, \`strokeWidth\`, \`opacity\`, \`rx\`). Text elements also have
+\`text\`, \`fontSize\`, \`fontFamily\`, \`fontWeight\`, \`textAnchor\`, \`lineHeight\`,
+\`textWrap\`. All coordinates are top-left based and unrotated; pass numbers.
 
 ## Recommended workflow
 1. Call \`lock_canvas\` with a short \`reason\` so the user does not fight you for
@@ -764,8 +924,14 @@ a size (\`width\`,\`height\`), plus style props (\`fill\`, \`stroke\`, \`strokeW
 8. When done: verify with a screenshot, then \`unlock_canvas\`.
 
 ## Tips
-- Coordinates are unscaled SVG units, origin top-left.
-- \`textAnchor\` "middle" needs \`x\` at the centre of the text box.
+- Coordinates are unscaled SVG units, origin top-left. add_element / add_elements
+  place things reliably; insert_svg keeps coordinates ("original") by default.
+- Discs: add_element({ type:"circle", x, y, width, height }), or pass cx/cy/r and
+  they are converted. "ellipse" is treated as a circle with width != height.
+- Gradients: call add_gradient to get a url(#id) string, then set it as an
+  element fill. A url(#...) that was never defined renders as nothing.
+- Text with no explicit width auto-fits to one line; pass width only to wrap it
+  into a column. \`textAnchor\` "middle" needs \`x\` at the centre of the text box.
 - Load non-standard fonts with \`load_font\` before applying them.
 - Use \`fix_elements\` to repair NaN / zero-size elements.
 `;
@@ -947,6 +1113,7 @@ export default function EditorScreen({
 
     const {
         elements,
+        elementsRef,
         selectedId,
         selectedIds,
         setSelectedId,
@@ -1649,10 +1816,16 @@ export default function EditorScreen({
 
     const captureCanvasScreenshot = useCallback(
         async (options = {}) => {
-            const svg = serializeElements(elements, canvasSize, defs);
+            // Read the live ref so a screenshot taken right after an edit
+            // reflects that edit, not a stale render closure.
+            const svg = serializeElements(
+                elementsRef.current || elements,
+                canvasSize,
+                defs,
+            );
             return createCanvasScreenshot(svg, canvasSize, options);
         },
-        [canvasSize, defs, elements],
+        [canvasSize, defs, elements, elementsRef],
     );
 
     const uploadScreenshotResult = useCallback(async (result, filename) => {
@@ -1962,14 +2135,18 @@ export default function EditorScreen({
             return uploadImageToStore(blob, "canvas.png");
         }
 
+        // Live element list — read at call time so results reflect edits made
+        // moments earlier by the same agent (avoids stale-closure snapshots).
+        const live = () => elementsRef.current || elements;
+
         const h = {
             // ── Read ──────────────────────────────────────────────────────────────
             get_canvas_state: async () => ({
                 canvasSize,
-                elementCount: elements.length,
-                elements: elements.map((el) => ({
+                elementCount: live().length,
+                elements: live().map((el) => ({
                     id: el.id,
-                    zIndex: elements.findIndex((entry) => entry.id === el.id),
+                    zIndex: live().findIndex((entry) => entry.id === el.id),
                     type: el.type,
                     x: el.x,
                     y: el.y,
@@ -1990,7 +2167,7 @@ export default function EditorScreen({
                 groups: Object.values(groups).map(g => ({ groupId: g.id, name: g.name, elementIds: g.elementIds })),
             }),
             list_elements: async () =>
-                elements.map((el, index) => ({
+                live().map((el, index) => ({
                     id: el.id,
                     zIndex: index,
                     type: el.type,
@@ -2005,20 +2182,20 @@ export default function EditorScreen({
                     visible: el.visible,
                 })),
             get_element: async ({ id } = {}) => {
-                const el = elements.find((e) => e.id === id);
+                const el = live().find((e) => e.id === id);
                 if (!el) throw new Error(`Element "${id}" not found`);
                 return {
                     ...el,
-                    zIndex: elements.findIndex((entry) => entry.id === id),
+                    zIndex: live().findIndex((entry) => entry.id === id),
                 };
             },
             get_snapshot: async () => ({
                 canvasSize,
-                elements,
+                elements: live(),
                 defs,
                 selectedId,
                 selectedIds,
-                svg: serializeElements(elements, canvasSize, defs),
+                svg: serializeElements(live(), canvasSize, defs),
             }),
             get_selected_elements: async () => {
                 const selectedSet = new Set(selectedIds);
@@ -2354,12 +2531,16 @@ export default function EditorScreen({
                 }
                 return { updated: results.filter((r) => !r.skipped).length, results };
             },
-            move_element: async ({ id, x, y } = {}) => {
-                const oldEl = elements.find((e) => e.id === id);
+            move_element: async ({ id, x, y, dx, dy } = {}) => {
+                const oldEl = live().find((e) => e.id === id);
                 if (!oldEl) throw new Error(`Element "${id}" not found`);
-                updateElement(id, { x, y });
-                scheduleFlip(id, oldEl, { ...oldEl, x, y });
-                return { id, x, y };
+                // Absolute x/y when given; otherwise treat dx/dy as a delta.
+                const nextX = x != null ? nn(x) : nn(oldEl.x) + nn(dx);
+                const nextY = y != null ? nn(y) : nn(oldEl.y) + nn(dy);
+                const patch = { x: nextX, y: nextY };
+                updateElement(id, patch);
+                scheduleFlip(id, oldEl, { ...oldEl, ...patch });
+                return { id, ...patch };
             },
             resize_element: async ({ id, width, height } = {}) => {
                 const oldEl = elements.find((e) => e.id === id);
@@ -2403,47 +2584,31 @@ export default function EditorScreen({
 
             // ── Add ───────────────────────────────────────────────────────────────
             add_element: async ({ type, ...props } = {}) => {
-                // Sanitize: replace NaN/undefined coords with canvas-safe defaults
+                // Sanitize: drop NaN numbers, then normalize loose geometry.
                 const safe = {};
                 for (const [k, v] of Object.entries(props)) {
                     if (typeof v === "number" && isNaN(v)) continue;
                     safe[k] = v;
                 }
                 syncCounter(elements);
-                const elementType = type || "rect";
+                const raw = normalizeAgentElement({ type: type || "rect", ...safe });
+                const elementType = raw.type;
                 const id = freshId(elementType);
-                const baseElement = {
-                    type: elementType,
-                    id,
-                    x: safe.x ?? canvasSize.width / 2 - 50,
-                    y: safe.y ?? canvasSize.height / 2 - 50,
-                    width: safe.width ?? 100,
-                    height: safe.height ?? 100,
-                    fill:
-                        safe.fill ||
-                        (elementType === "text" ? "#111827" : "#0d65d9"),
+                const el = {
                     stroke: "none",
                     strokeWidth: 0,
                     opacity: 1,
-                    ...safe,
+                    ...raw,
+                    id,
+                    x: raw.x ?? canvasSize.width / 2 - 50,
+                    y: raw.y ?? canvasSize.height / 2 - 50,
+                    width: raw.width ?? 100,
+                    height: raw.height ?? 100,
+                    fill:
+                        raw.fill ||
+                        (elementType === "text" ? "#111827" : "#0d65d9"),
                 };
-                addElement(
-                    elementType === "text"
-                        ? {
-                              ...baseElement,
-                              ...makeTextPatch(baseElement, {
-                                  text: safe.text ?? "Text",
-                                  width: safe.width ?? baseElement.width,
-                                  fontSize: safe.fontSize,
-                                  lineHeight: safe.lineHeight,
-                                  textWrap: safe.textWrap ?? true,
-                                  autoFitWidth: !Number.isFinite(
-                                      Number(safe.width),
-                                  ),
-                              }),
-                          }
-                        : baseElement,
-                );
+                addElement(el);
                 scheduleFadeIn(id);
                 return { id };
             },
@@ -2460,53 +2625,9 @@ export default function EditorScreen({
                             (typeof el[k] === "number" && !isNaN(el[k])),
                     );
                 });
-                // Normalize geometry: derive x/y/width/height from cx/cy/r (circles) or x1/y1/x2/y2 (lines)
-                const normalized = clean.map((el) => {
-                    const e = { ...el };
-                    if (e.type === "circle" || e.type === "ellipse") {
-                        const rx =
-                            e.rx ??
-                            e.r ??
-                            (typeof e.width === "number" ? e.width / 2 : 0);
-                        const ry =
-                            e.ry ??
-                            e.r ??
-                            (typeof e.height === "number" ? e.height / 2 : 0);
-                        if (e.x === undefined && e.cx !== undefined)
-                            e.x = e.cx - rx;
-                        if (e.y === undefined && e.cy !== undefined)
-                            e.y = e.cy - ry;
-                        if (e.width === undefined) e.width = rx * 2;
-                        if (e.height === undefined) e.height = ry * 2;
-                    } else if (e.type === "line") {
-                        const x1 = e.x1 ?? e.x ?? 0;
-                        const y1 = e.y1 ?? e.y ?? 0;
-                        const x2 = e.x2 ?? (e.x ?? 0) + (e.width ?? 0);
-                        const y2 = e.y2 ?? (e.y ?? 0) + (e.height ?? 0);
-                        e.x = x1;
-                        e.y = y1;
-                        e.width = x2 - x1;
-                        e.height = y2 - y1;
-                        e.x1 = x1;
-                        e.y1 = y1;
-                        e.x2 = x2;
-                        e.y2 = y2;
-                    }
-                    if (e.type === "text") {
-                        e.fontFamily = resolveFontFamily(e.fontFamily);
-                        Object.assign(
-                            e,
-                            makeTextPatch(e, {
-                                text: e.text ?? "Text",
-                                width: e.width,
-                                fontSize: e.fontSize,
-                                lineHeight: e.lineHeight,
-                                textWrap: e.textWrap ?? true,
-                            }),
-                        );
-                    }
-                    return e;
-                });
+                // Normalize loose geometry (cx/cy/r discs, x1/y1/x2/y2 lines,
+                // ellipse->circle) and text wrapping.
+                const normalized = clean.map(normalizeAgentElement);
                 const skipped = els.length - clean.length;
                 const prepared = prepareImportedElements(
                     normalized,
@@ -2588,10 +2709,14 @@ export default function EditorScreen({
             },
             add_icon: async ({
                 href,
+                name,
+                icon,
                 x,
                 y,
-                width = 80,
-                height = 80,
+                size,
+                width,
+                height,
+                color,
                 fill = "#0d65d9",
                 iconColors = {},
                 opacity = 1,
@@ -2599,17 +2724,35 @@ export default function EditorScreen({
                 locked = false,
                 description = "",
             } = {}) => {
-                if (!href) throw new Error("href is required");
+                let resolvedHref = href;
+                if (!resolvedHref) {
+                    const iconName = name || icon;
+                    if (!iconName) {
+                        throw new Error(
+                            "Provide an icon `name` (e.g. \"music\", \"arrow-right\" — Lucide names) or a `href`.",
+                        );
+                    }
+                    resolvedHref = resolveLucideIconHref(iconName, {
+                        color: color || fill || "currentColor",
+                    });
+                    if (!resolvedHref) {
+                        throw new Error(
+                            `Unknown icon "${iconName}". Use a Lucide icon name (kebab or PascalCase).`,
+                        );
+                    }
+                }
+                const w = Number(size ?? width ?? 80) || 80;
+                const h = Number(size ?? height ?? 80) || 80;
                 syncCounter(elements);
                 const id = freshId("image");
                 addElement({
                     id,
                     type: "image",
-                    x: x ?? canvasSize.width / 2 - width / 2,
-                    y: y ?? canvasSize.height / 2 - height / 2,
-                    width,
-                    height,
-                    href,
+                    x: x ?? canvasSize.width / 2 - w / 2,
+                    y: y ?? canvasSize.height / 2 - h / 2,
+                    width: w,
+                    height: h,
+                    href: resolvedHref,
                     fill,
                     iconColors,
                     stroke: "none",
@@ -2948,7 +3091,8 @@ export default function EditorScreen({
             check_layout: async () => {
                 const W = canvasSize.width;
                 const H = canvasSize.height;
-                const overflow = elements
+                const els = live();
+                const overflow = els
                     .map((el) => {
                         // Use effectiveTextBounds so textAnchor="middle" headlines
                         // aren't false-positives (their x is the center, not the left edge).
@@ -2988,7 +3132,7 @@ export default function EditorScreen({
                     .filter(Boolean);
                 return {
                     canvasSize: { width: W, height: H },
-                    totalElements: elements.length,
+                    totalElements: els.length,
                     overflowCount: overflow.length,
                     overflowingElements: overflow,
                     allGood: overflow.length === 0,
@@ -6423,14 +6567,33 @@ export default function EditorScreen({
             // ── Font loading ──────────────────────────────────────────────────────
             load_font: async ({ fontFamily, ids = [], applyToAll = false } = {}) => {
                 if (!fontFamily) throw new Error("fontFamily is required");
-                addFont({ type: "google", name: fontFamily });
+                // Embed the actual font bytes so it survives screenshot/export;
+                // fall back to a plain Google <import> if inlining fails.
+                let embedded = false;
+                try {
+                    const dataUrl = await inlineGoogleFont(fontFamily);
+                    if (dataUrl) {
+                        addFont({
+                            type: "custom",
+                            name: fontFamily,
+                            dataUrl,
+                            format: "woff2",
+                        });
+                        embedded = true;
+                    }
+                } catch {
+                    /* network / CORS — fall through to @import */
+                }
+                if (!embedded) addFont({ type: "google", name: fontFamily });
                 const applyIds = applyToAll
-                    ? elements.filter((e) => e.type === "text").map((e) => e.id)
+                    ? live().filter((e) => e.type === "text").map((e) => e.id)
                     : ids;
                 if (applyIds.length) updateElements(applyIds, { fontFamily });
                 try {
                     await document.fonts.load(`20px "${fontFamily}"`);
-                } catch {}
+                } catch {
+                    /* font may still be loading; not fatal */
+                }
                 toast(
                     <span
                         style={{
@@ -6452,7 +6615,7 @@ export default function EditorScreen({
                     </span>,
                     { duration: 3000, position: "bottom-center" },
                 );
-                return { loaded: fontFamily, applied_to: applyIds };
+                return { loaded: fontFamily, embedded, applied_to: applyIds };
             },
 
             // ── Canvas resize ─────────────────────────────────────────────────────
@@ -6476,7 +6639,7 @@ export default function EditorScreen({
             },
 
             // ── SVG import ────────────────────────────────────────────────────────
-            insert_svg: async ({ svg, placement = "center" } = {}) => {
+            insert_svg: async ({ svg, placement = "original" } = {}) => {
                 if (!svg) throw new Error("SVG markup required");
                 const { elements: parsed } = parseSVGToElements(svg);
                 if (!parsed || parsed.length === 0) {
@@ -6492,15 +6655,40 @@ export default function EditorScreen({
                 }
                 const prepared = prepareImportedElements(
                     parsed,
-                    placement === "original" ? "original" : "center",
+                    placement === "center" ? "center" : "original",
                 );
                 const ids = addPreparedElements(prepared, { selectNew: true });
                 return { addedIds: ids, count: ids.length };
             },
             replace_defs: async ({ defs: d = {} } = {}) => {
-                setDefsFromImport(d);
-                return { ok: true };
+                const next = { ...d };
+                if (Array.isArray(d.gradients)) {
+                    next.gradients = d.gradients.map(normalizeGradientInput);
+                }
+                setDefsFromImport(next);
+                return { ok: true, gradients: (next.gradients || []).map((g) => g.id) };
             },
+
+            // ── Gradients ─────────────────────────────────────────────────────────
+            add_gradient: async (spec = {}) => {
+                const grad = normalizeGradientInput(spec);
+                if (grad.stops.length < 2) {
+                    throw new Error(
+                        "add_gradient needs at least 2 stops, e.g. " +
+                            '{ type:"linear", stops:[{offset:0,stopColor:"#000"},{offset:100,stopColor:"#fff"}] }',
+                    );
+                }
+                addGradient(grad);
+                return { id: grad.id, fill: `url(#${grad.id})` };
+            },
+            list_gradients: async () => ({
+                gradients: (defs.gradients || []).map((g) => ({
+                    id: g.id,
+                    type: g.type,
+                    fill: `url(#${g.id})`,
+                    stops: g.stops,
+                })),
+            }),
 
             // ── Agent guidance / coordination ────────────────────────────────────
             get_editor_guide: async ({ topic } = {}) => ({
@@ -6582,6 +6770,7 @@ export default function EditorScreen({
     }, [
         addElement,
         addFont,
+        addGradient,
         addPreparedElements,
         bringForward,
         canUndo,
@@ -6594,6 +6783,7 @@ export default function EditorScreen({
         defs,
         deleteElements,
         elements,
+        elementsRef,
         groups,
         onCanvasResize,
         onNameChange,

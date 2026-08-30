@@ -27,7 +27,26 @@ function rotateTransform(el) {
 const DASH_MAP = { dashed: '8,4', dotted: '2,4' };
 function dashAttr(d) { return DASH_MAP[d]; }
 
-function serializeOne(el) {
+const NUM_FIELDS = ['x', 'y', 'width', 'height', 'rx', 'ry', 'r', 'cx', 'cy',
+  'x1', 'y1', 'x2', 'y2', 'fontSize', 'strokeWidth', 'opacity', 'rotation',
+  'lineHeight', 'letterSpacing'];
+
+// Agents sometimes send coordinates as strings ("96"); arithmetic on those
+// silently corrupts positions. Coerce known numeric fields before serializing.
+function coerceNumericFields(el) {
+  let out = el;
+  for (const key of NUM_FIELDS) {
+    const v = el[key];
+    if (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v))) {
+      if (out === el) out = { ...el };
+      out[key] = Number(v);
+    }
+  }
+  return out;
+}
+
+function serializeOne(rawEl) {
+  const el = coerceNumericFields(rawEl);
   const vis  = el.visible === false ? ' display="none"' : '';
   const desc = el.description ? ` data-description="${esc(el.description)}"` : '';
   const rot  = rotateTransform(el);
@@ -67,12 +86,15 @@ function serializeOne(el) {
       })}${desc}${vis}${rot}${styleAttr}${rawAttrStr} />`;
 
     case 'circle':
+    case 'ellipse':
+      // Honour cx/cy/r/rx/ry when present so agent-authored discs match the
+      // live canvas renderer (RenderCircle); fall back to the x/y/w/h box.
       return `<ellipse ${attrs({
         id: el.id,
-        cx: el.x + el.width / 2,
-        cy: el.y + el.height / 2,
-        rx: Math.max(el.width / 2, 1),
-        ry: Math.max(el.height / 2, 1),
+        cx: el.cx ?? ((el.x ?? 0) + (el.width ?? 0) / 2),
+        cy: el.cy ?? ((el.y ?? 0) + (el.height ?? 0) / 2),
+        rx: Math.max(el.rx ?? el.r ?? (el.width ?? 0) / 2, 1),
+        ry: Math.max(el.ry ?? el.r ?? (el.height ?? 0) / 2, 1),
         fill: el.fill || 'none',
         stroke: el.stroke !== 'none' ? el.stroke : undefined,
         'stroke-width': el.strokeWidth || undefined,

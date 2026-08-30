@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useRef } from 'react';
 import '@mcp-b/global'; // side-effect: polyfills document.modelContext when absent
+import { normalizeToolArgs } from './toolArgs.js';
 
 // Human-readable descriptions for the tools whose purpose isn't obvious from the
 // name. Anything not listed here falls back to a generated description.
@@ -48,7 +49,7 @@ const TOOL_DESCRIPTIONS = {
   set_opacity: 'Set an element opacity (0-1). Args: { id, opacity }.',
   set_text: 'Set the text content (and optional text props) of a text element. Args: { id, text, ... }.',
   batch_update_texts: 'Update the text of many text elements at once. Args: { updates: [{ id, text }] }.',
-  move_element: 'Move an element to an absolute position. Args: { id, x, y }.',
+  move_element: 'Move an element. Args: { id, x, y } for an absolute position, or { id, dx, dy } for a relative nudge. Works for every element type.',
   resize_element: 'Resize an element. Args: { id, width, height }.',
   lock_element: 'Lock an element against editing. Args: { id, locked? }.',
   unlock_element: 'Unlock an element. Args: { id }.',
@@ -60,7 +61,7 @@ const TOOL_DESCRIPTIONS = {
   add_elements: 'Add multiple new elements at once. Args: { elements }.',
   duplicate_element: 'Duplicate one element. Args: { id }.',
   duplicate_elements: 'Duplicate multiple elements with an offset. Args: { ids, offset?, dx?, dy? }.',
-  add_icon: 'Add an icon image element. Args: { name/icon, x?, y?, size?, color? }.',
+  add_icon: 'Add an icon (Lucide set). Args: { name: "music" | "arrow-right" | …, x?, y?, size?, color? } or { href } for a custom image.',
   bring_forward: 'Move an element up one step in the z-order. Args: { id, steps? }.',
   send_backward: 'Move an element down one step in the z-order. Args: { id, steps? }.',
   bring_to_front: 'Move an element to the top of the z-order. Args: { id }.',
@@ -81,8 +82,10 @@ const TOOL_DESCRIPTIONS = {
   stack_center: 'Stack elements centred on a point. Args: { ids, cx?, cy?, preserveRelative? }.',
   load_font: 'Load a Google font and optionally apply it. Args: { fontFamily, ids?, applyToAll? }.',
   resize_canvas: 'Resize the canvas. Args: { width, height, constrain? }.',
-  insert_svg: 'Parse and insert raw SVG markup. Args: { svg, placement? }.',
-  replace_defs: 'Replace the canvas <defs> (gradients, filters, fonts). Args: { defs }.',
+  insert_svg: 'Parse and insert raw SVG markup. Args: { svg, placement? "original"|"center" (default "original", keeps coordinates) }.',
+  replace_defs: 'Replace the canvas <defs> (gradients, variables, fonts). Args: { defs }. Prefer add_gradient for adding one gradient.',
+  add_gradient: 'Define a gradient and get the fill string to use. Args: { type?: "linear"|"radial", stops: [{ offset: 0-100, stopColor, stopOpacity? }], id?, x1?,y1?,x2?,y2? | cx?,cy?,r? }. Returns { id, fill: "url(#id)" } — set that as an element fill.',
+  list_gradients: 'List gradients currently defined on the canvas, with their url(#id) fill strings.',
   set_template_name: 'Set the template / document name. Args: { name }.',
   get_editor_guide: 'Return a guide explaining how to drive this SVG editor with these tools — call it before making changes. Optional args: { topic }.',
   lock_canvas: 'Lock the canvas so the user cannot edit while you work. Always pair with unlock_canvas. Args: { reason? }.',
@@ -101,6 +104,57 @@ function humanize(name) {
 
 function describe(name) {
   return TOOL_DESCRIPTIONS[name] || humanize(name);
+}
+
+const STR_ARRAY = { type: 'array', items: { type: 'string' } };
+const OBJ_ARRAY = { type: 'array', items: { type: 'object', additionalProperties: true } };
+const NUM = { type: 'number' };
+const STR = { type: 'string' };
+
+// Explicit schemas for tools taking arrays/objects — a bare permissive schema
+// makes models pass JSON-encoded strings, which then break `.map` / `.filter`.
+const TOOL_SCHEMAS = {
+  select_elements: { ids: STR_ARRAY },
+  update_elements: { ids: STR_ARRAY, patch: { type: 'object', additionalProperties: true } },
+  delete_elements: { ids: STR_ARRAY },
+  duplicate_elements: { ids: STR_ARRAY, offset: NUM, dx: NUM, dy: NUM },
+  add_elements: { elements: OBJ_ARRAY, selectNew: { type: 'boolean' } },
+  batch_update_texts: { updates: OBJ_ARRAY },
+  align_elements: { ids: STR_ARRAY, alignment: STR, axis: STR },
+  distribute_elements: { ids: STR_ARRAY, axis: STR, spacing: NUM },
+  arrange_row: { ids: STR_ARRAY, x: NUM, y: NUM, gap: NUM, alignment: STR },
+  arrange_column: { ids: STR_ARRAY, x: NUM, y: NUM, gap: NUM, alignment: STR },
+  arrange_grid: { ids: STR_ARRAY, x: NUM, y: NUM, columns: NUM, colGap: NUM, rowGap: NUM },
+  align_grid: { ids: STR_ARRAY },
+  snap_to_grid: { ids: STR_ARRAY, gridSize: NUM, snapSize: { type: 'boolean' } },
+  constrain_elements: { ids: STR_ARRAY, padding: NUM, ignoreIds: STR_ARRAY },
+  center_in_canvas: { ids: STR_ARRAY, axis: STR },
+  stack_center: { ids: STR_ARRAY, cx: NUM, cy: NUM, preserveRelative: { type: 'boolean' } },
+  measure_elements: { ids: STR_ARRAY },
+  fix_elements: { ids: STR_ARRAY },
+  create_group: { ids: STR_ARRAY, name: STR },
+  add_to_group: { groupId: STR, ids: STR_ARRAY },
+  remove_from_group: { groupId: STR, ids: STR_ARRAY },
+  save_to_collection: { ids: STR_ARRAY, name: STR },
+  add_gradient: {
+    type: STR, id: STR,
+    stops: { type: 'array', items: { type: 'object', properties: { offset: NUM, stopColor: STR, stopOpacity: NUM } } },
+    x1: NUM, y1: NUM, x2: NUM, y2: NUM, cx: NUM, cy: NUM, r: NUM,
+  },
+  add_element: { type: STR, x: NUM, y: NUM, width: NUM, height: NUM, text: STR, fill: STR },
+  add_icon: { name: STR, icon: STR, x: NUM, y: NUM, size: NUM, width: NUM, height: NUM, color: STR },
+  update_element: { id: STR, x: NUM, y: NUM, width: NUM, height: NUM },
+  move_element: { id: STR, x: NUM, y: NUM, dx: NUM, dy: NUM },
+  resize_element: { id: STR, width: NUM, height: NUM },
+  ask_canvas_question: { question: STR, options: STR_ARRAY, allowCustom: { type: 'boolean' } },
+};
+
+function inputSchemaFor(name) {
+  const key = name.replace(/^editor\./, '');
+  const props = TOOL_SCHEMAS[key];
+  return props
+    ? { type: 'object', properties: props, additionalProperties: true }
+    : { type: 'object', properties: {}, additionalProperties: true };
 }
 
 function toContent(result) {
@@ -143,19 +197,20 @@ export function useWebMCP(clientToolHandlers, { enabled = true, onEvent } = {}) 
           {
             name,
             description: describe(name),
-            inputSchema: { type: 'object', properties: {}, additionalProperties: true },
+            inputSchema: inputSchemaFor(name),
             async execute(args) {
               const handler = handlersRef.current?.[name];
               if (!handler) throw new Error(`No handler for tool "${name}"`);
               const callId = `mcp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
-              emit({ type: 'call', id: callId, name, args: args || {} });
+              const cleanArgs = normalizeToolArgs(args) || {};
+              emit({ type: 'call', id: callId, name, args: cleanArgs });
               try {
-                const result = await handler(args || {});
-                emit({ type: 'result', id: callId, name, args: args || {}, result });
+                const result = await handler(cleanArgs);
+                emit({ type: 'result', id: callId, name, args: cleanArgs, result });
                 return toContent(result);
               } catch (err) {
                 const message = err?.message || String(err);
-                emit({ type: 'error', id: callId, name, args: args || {}, error: message });
+                emit({ type: 'error', id: callId, name, args: cleanArgs, error: message });
                 return {
                   content: [{ type: 'text', text: `Error: ${message}` }],
                   isError: true,

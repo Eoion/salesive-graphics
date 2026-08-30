@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
+import { normalizeToolArgs } from './toolArgs.js';
 
 export const EDITOR_AI_CONVERSATION_KEY = 'salesive_editor_ai_conversation';
 
@@ -43,6 +44,8 @@ const TOOL_PHASE_MAP = {
   bring_to_front: 'editing',
   send_to_back: 'editing',
   insert_collection_item: 'editing',
+  add_gradient: 'editing',
+  list_gradients: 'reading',
   agent_thought: 'thinking',
   get_editor_guide: 'reading',
   lock_canvas: 'thinking',
@@ -328,9 +331,10 @@ export function useEditorAgent({ getEditorContext, clientToolHandlers = {}, enab
         return;
       }
 
-      console.log('[Tool:Call]', tool, JSON.stringify(args, null, 2));
+      const cleanArgs = normalizeToolArgs(args) || {};
+      console.log('[Tool:Call]', tool, JSON.stringify(cleanArgs, null, 2));
       try {
-        const result = await handler(args || {});
+        const result = await handler(cleanArgs);
         const serialized = typeof result === 'string' ? result : JSON.stringify(result);
         console.log('[Tool:Result]', tool, parseMaybeJson(serialized));
         socket.emit('tool:response', { toolCallId: tcId, result: serialized });
