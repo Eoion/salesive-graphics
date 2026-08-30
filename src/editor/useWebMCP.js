@@ -179,6 +179,43 @@ function inputSchemaFor(name) {
     : { type: 'object', properties: {}, additionalProperties: true };
 }
 
+// Some agent runtimes cap how many tools a page may expose over WebMCP (and how
+// large the combined tool schema payload may be). We register this curated core
+// set individually; everything else (the create_* component builders, niche
+// layout helpers) stays reachable through the `call_editor_tool` dispatcher and
+// is documented by `get_editor_guide`.
+// Ordered by priority — when the cap forces a trim, the tail is dropped first
+// (still reachable via call_editor_tool).
+const WEBMCP_CORE = [
+  // agent coordination + must-have reads
+  'get_editor_guide', 'get_canvas_state', 'get_snapshot', 'get_canvas_screenshot',
+  'list_elements', 'get_element', 'check_layout', 'lock_canvas', 'unlock_canvas',
+  'ask_canvas_question', 'set_agent_identity',
+  // core create / edit / delete
+  'add_element', 'add_elements', 'add_icon', 'add_gradient', 'insert_svg',
+  'update_element', 'update_elements', 'set_text', 'set_fill', 'set_stroke',
+  'set_opacity', 'move_element', 'resize_element', 'delete_element',
+  'delete_elements', 'duplicate_element', 'duplicate_elements',
+  'select_element', 'select_elements',
+  // layout
+  'align_elements', 'distribute_elements', 'arrange_row', 'arrange_column',
+  'arrange_grid', 'center_in_canvas', 'place_at', 'constrain_elements',
+  'align_to_element', 'fit_frame_around', 'fix_elements', 'snap_to_grid',
+  // order + visibility
+  'bring_to_front', 'send_to_back', 'bring_forward', 'send_backward',
+  'lock_element', 'unlock_element', 'hide_element', 'show_element',
+  // groups + canvas + history + misc reads
+  'create_group', 'add_to_group', 'remove_from_group', 'dissolve_group',
+  'resize_canvas', 'load_font', 'set_template_name', 'replace_defs',
+  'undo_last_action', 'redo_last_action', 'batch_update_texts',
+  'get_selected_elements', 'find_text_elements', 'measure_elements',
+  'review_canvas_region', 'get_element_screenshot', 'get_region_screenshot',
+  'list_groups', 'list_gradients', 'save_to_collection', 'insert_collection_item',
+  'list_collection_items',
+];
+
+const DEFAULT_MAX_WEBMCP_TOOLS = 48;
+
 function toContent(result) {
   const text = typeof result === 'string' ? result : JSON.stringify(result ?? null);
   const out = { content: [{ type: 'text', text }] };
@@ -213,50 +250,93 @@ export function useWebMCP(clientToolHandlers, { enabled = true, onEvent } = {}) 
         console.warn('[WebMCP] document.modelContext unavailable; editor tools not exposed.');
         return;
       }
-      registerAll(modelContext, controller);
+      registerAll(modelContext);
     });
 
     return () => { cancelled = true; controller.abort(); };
 
-    function registerAll(modelContext, ctrl) {
-      const names = Object.keys(clientToolHandlers || {}).filter((n) => !n.startsWith('editor.'));
+    // Run a handler by name with arg normalization + activity events. Shared by
+    // the discrete tools and the `call_editor_tool` dispatcher.
+    async function runTool(name, rawArgs) {
+      const key = String(name || '').replace(/^editor\./, '');
+      const handler = handlersRef.current?.[key] || handlersRef.current?.[name];
+      if (!handler) throw new Error(`No handler for tool "${name}"`);
+      const callId = `mcp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+      const cleanArgs = normalizeToolArgs(rawArgs) || {};
+      emit({ type: 'call', id: callId, name: key, args: cleanArgs });
+      try {
+        const result = await handler(cleanArgs);
+        emit({ type: 'result', id: callId, name: key, args: cleanArgs, result });
+        return { ok: true, result };
+      } catch (err) {
+        const message = err?.message || String(err);
+        emit({ type: 'error', id: callId, name: key, args: cleanArgs, error: message });
+        return { ok: false, error: message };
+      }
+    }
 
-      for (const name of names) {
+    function registerAll(modelContext) {
+      const register = (def) => {
         try {
-          const maybePromise = modelContext.registerTool(
-          {
-            name,
-            description: describe(name),
-            inputSchema: inputSchemaFor(name),
-            async execute(args) {
-              const handler = handlersRef.current?.[name];
-              if (!handler) throw new Error(`No handler for tool "${name}"`);
-              const callId = `mcp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
-              const cleanArgs = normalizeToolArgs(args) || {};
-              emit({ type: 'call', id: callId, name, args: cleanArgs });
-              try {
-                const result = await handler(cleanArgs);
-                emit({ type: 'result', id: callId, name, args: cleanArgs, result });
-                return toContent(result);
-              } catch (err) {
-                const message = err?.message || String(err);
-                emit({ type: 'error', id: callId, name, args: cleanArgs, error: message });
-                return {
-                  content: [{ type: 'text', text: `Error: ${message}` }],
-                  isError: true,
-                };
-              }
-            },
-          },
-          { signal: ctrl.signal },
-          );
-          if (maybePromise?.catch) maybePromise.catch((e) => console.warn('[WebMCP] registerTool failed', name, e));
+          const p = modelContext.registerTool(def, { signal: controller.signal });
+          if (p?.catch) p.catch((e) => console.warn('[WebMCP] registerTool failed', def.name, e));
         } catch (e) {
-          console.warn('[WebMCP] registerTool threw', name, e);
+          console.warn('[WebMCP] registerTool threw', def.name, e);
         }
+      };
+
+      const allNames = Object.keys(clientToolHandlers || {}).filter((n) => !n.startsWith('editor.'));
+      const envMax = Number(import.meta.env?.VITE_WEBMCP_MAX_TOOLS);
+      const max = Number.isFinite(envMax) && envMax > 0 ? envMax : DEFAULT_MAX_WEBMCP_TOOLS;
+
+      // Meta tools first so they always fit.
+      register({
+        name: 'list_editor_tools',
+        description: 'List every editor tool available through call_editor_tool (name + one-line description).',
+        inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+        async execute() {
+          return toContent(allNames.map((n) => ({ name: n, description: describe(n) })));
+        },
+      });
+      register({
+        name: 'call_editor_tool',
+        description: 'Invoke any editor tool by name. Args: { tool: string, args?: object }. Use list_editor_tools / get_editor_guide to discover tools (e.g. the create_* component builders).',
+        inputSchema: {
+          type: 'object',
+          properties: { tool: STR, args: { type: 'object', additionalProperties: true } },
+          required: ['tool'],
+          additionalProperties: true,
+        },
+        async execute(a) {
+          const c = normalizeToolArgs(a) || {};
+          const r = await runTool(c.tool, c.args || {});
+          return r.ok
+            ? toContent(r.result)
+            : { content: [{ type: 'text', text: `Error: ${r.error}` }], isError: true };
+        },
+      });
+
+      const budget = Math.max(0, max - 2);
+      const handlerSet = new Set(allNames);
+      const exposed = WEBMCP_CORE.filter((n) => handlerSet.has(n)).slice(0, budget);
+      for (const name of exposed) {
+        register({
+          name,
+          description: describe(name),
+          inputSchema: inputSchemaFor(name),
+          async execute(args) {
+            const r = await runTool(name, args);
+            return r.ok
+              ? toContent(r.result)
+              : { content: [{ type: 'text', text: `Error: ${r.error}` }], isError: true };
+          },
+        });
       }
 
-      console.info(`[WebMCP] exposed ${names.length} editor tools to AI agents.`);
+      console.info(
+        `[WebMCP] exposed ${exposed.length + 2} tools (${exposed.length} core + list_editor_tools + call_editor_tool); ` +
+          `${allNames.length} total reachable via call_editor_tool.`,
+      );
     }
   }, [enabled, clientToolHandlers, emit]);
 }

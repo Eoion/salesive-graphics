@@ -1003,7 +1003,10 @@ polygon, star, arrow. Every element has an \`id\`, a top-left position
    bounds; use \`check_layout\` to detect overflow/overlap.
 4. Make changes with the mutation tools:
    - create: \`add_element\`, \`add_elements\`, \`add_icon\`, and the \`create_*\`
-     component helpers (create_button, create_card, create_navbar, …).
+     component helpers (create_button, create_card, create_navbar, …). Over
+     WebMCP only a core set is exposed directly — reach any other tool (the
+     \`create_*\` builders included) with \`call_editor_tool({ tool, args })\`, and
+     \`list_editor_tools\` enumerates them all.
    - edit: \`update_element(s)\`, \`set_fill\`, \`set_stroke\`, \`set_opacity\`,
      \`set_text\`, \`move_element\`, \`resize_element\`.
    - arrange: \`align_elements\`, \`distribute_elements\`, \`arrange_row/column/grid\`,
