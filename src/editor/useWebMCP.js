@@ -219,7 +219,12 @@ const DEFAULT_MAX_WEBMCP_TOOLS = 48;
 function toContent(result) {
   const text = typeof result === 'string' ? result : JSON.stringify(result ?? null);
   const out = { content: [{ type: 'text', text }] };
-  if (result && typeof result === 'object') out.structuredContent = result;
+  // structuredContent must be structured-clone-safe (it crosses the bridge via
+  // postMessage). Round-trip through JSON so a stray Promise/function/DOM node
+  // in a handler's return value can never wedge the transport.
+  if (result && typeof result === 'object') {
+    try { out.structuredContent = JSON.parse(text); } catch { /* leave it text-only */ }
+  }
   return out;
 }
 

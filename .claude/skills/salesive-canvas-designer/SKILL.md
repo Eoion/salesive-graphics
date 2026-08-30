@@ -20,30 +20,47 @@ The connected page is a **fixed-size flat SVG canvas**. Elements are `rect`,
 `rx`. You drive it entirely through `mcp__webmcp__*` tools — there is no file to
 edit and no server.
 
-Before touching anything: `get_editor_guide`, then `get_canvas_state` (or
-`get_snapshot`). If the tools are deferred, load them with **one** `ToolSearch`
-`select:` call listing every tool you expect to need.
+Before touching anything: `get_editor_guide` (returns *this* document), then
+`get_canvas_state` (or `get_snapshot`). If the tools are deferred, load them with
+**one** `ToolSearch` `select:` call listing every tool you expect to need.
 
-**Only a core set (~46) is exposed as discrete WebMCP tools.** Reach anything
-else — every `create_*` component builder, `stack_center`, `rename_group`,
-`estimate_text`, `get_selected_elements`, screenshots of a single element/region,
-etc. — with `call_editor_tool({ tool: "<name>", args: {…} })`.
-`list_editor_tools` enumerates all ~100 with one-line descriptions.
+**Only ~48 tools are exposed discretely over WebMCP** (agent-runtime tool cap).
+`get_editor_guide`, `list_editor_tools` and `call_editor_tool` are always among
+them. Reach anything not in the discrete list — every `create_*` component
+builder, `stack_center`, `rename_group`, `estimate_text`,
+`get_selected_elements`, single-element/region screenshots, etc. — with
+`call_editor_tool({ tool: "<name>", args: {…} })`. `list_editor_tools` enumerates
+all ~100 with one-line descriptions. Numeric args may be passed as numbers or
+numeric strings; array/object args as real arrays/objects (they're normalized).
 
 ## The build loop
 
-1. `lock_canvas({reason})` — pair with `unlock_canvas` at the very end (and on abort).
-2. `set_agent_identity({name})`, `set_template_name({name})`.
+1. `set_agent_identity({name})` — call this first. The name shows on the canvas
+   lock overlay and any question prompt, and calling it flips the side panel to
+   the **Activity** tab so the user watches your tool calls stream in. Then
+   `set_template_name({name})`.
+2. `lock_canvas({reason})` — pair with `unlock_canvas` at the very end (and on abort).
+   The `reason` string is what the user sees on the lock overlay.
 3. `resize_canvas` to the target (1080×1080 IG post, 1080×1350 IG portrait / flyer, 1080×1920 story).
 4. Define gradients with `add_gradient` (see below). Build **back to front**:
    background rect → shapes/glows → images/icons → text last.
-5. Shapes with `add_element` / `add_elements`. **Text with `insert_svg`** (see below).
+5. Shapes with `add_element` / `add_elements` (prefer the batch call — one array
+   of `{type, x, y, …}` objects, one undo step). **Text with `insert_svg`** (see
+   below). After building a multi-part component (icon + card + label), pass its
+   ids to `create_group` so `align_*` / `arrange_*` / `move_element` treat it as
+   one unit.
 6. Verify visually every few steps: `take_screenshot` returns a URL — download it
    (`curl`) and `Read` the PNG. `check_layout` catches overflow.
 7. `unlock_canvas`.
 
 Keep a scratch area or delete test elements when probing tools. Everything is
 undoable (`undo_last_action` / `redo_last_action`).
+
+**Asking the user:** for a genuine decision that is theirs (wording, brand colour,
+one of two directions), call `ask_canvas_question({ question, options?: string[],
+allowCustom? })`. It blocks until they answer and returns
+`{ answered, answer, custom }` (or `{ answered:false, cancelled:true }` if they
+dismiss it). Don't use it for things you can just decide.
 
 ## Coordinate & anchor model — the thing that bites
 
@@ -54,6 +71,8 @@ undoable (`undo_last_action` / `redo_last_action`).
   anchor, `measure_elements` reports the *visible* box plus a separate `anchorX`.
 - After creating text you may **only need to nudge `x`/`y` with `update_element`** —
   that works, including changing `y`.
+- `move_element` takes `{ id, x, y }` (absolute) **or `{ id, dx, dy }`** (relative
+  nudge), for any element type.
 - Layout tools (`align_*`, `arrange_*`, `distribute_elements`, `measure_elements`,
   …) operate on the **visible box**, so anchored text lines up with shapes.
 - `set_text` accepts `text`, `fontSize`, `fontWeight`, `fontFamily`, `textAnchor`,
@@ -113,9 +132,9 @@ add_gradient({ id:"bg", type:"linear", x1:0,y1:0,x2:0,y2:1,
 ## Icons & images
 
 - **`add_icon({ name })` resolves a Lucide icon name** (`"music"`, `"arrow-right"`,
-  `"ArrowRight"`) to an inline SVG `image` element — this renders. Optional
-  `size`, `color`, `x`, `y`. An **unknown name throws**; a remote `href` (CDN /
-  http image URL) is still blocked and will not render.
+  `"ArrowRight"`) to an inline SVG `image` element that renders, and returns
+  `{ id }`. Optional `size`, `color`, `x`, `y`. An **unknown name throws**; a
+  remote `href` (CDN / http image URL) is still blocked and will not render.
 - For full control, **draw icons yourself as `<path>` glyphs inside `insert_svg`**
   (Lucide-style 24×24 stroke paths, `stroke="#..." stroke-width="2" fill="none"
   stroke-linecap="round"`), or compose from `line`/`circle`/`rect`/`polygon`.
@@ -132,13 +151,13 @@ add_gradient({ id:"bg", type:"linear", x1:0,y1:0,x2:0,y2:1,
 |---|---|
 | `align_elements({ids, align:"left"\|"top"\|"center-h"\|…})` | ✅ honors `align`/`alignment`; `relativeTo:"group"` default for 2+ |
 | `align_to_element({ids, targetId\|refId, align})` | ✅ |
-| `arrange_row` / `arrange_column({ids, x, y, gap, alignment})` | ✅ honors the `x`/`y` origin |
+| `arrange_row` / `arrange_column({ids, x, y, gap, alignment})` | ✅ honors the `x`/`y` (or `startX`/`startY`) origin |
 | `arrange_grid({ids, x, y, columns, colGap, rowGap})` | ✅ |
 | `align_grid({ids, x, y, columns})` | ✅ plain top-left grid by default; `align`/`valign` for in-cell placement |
 | `distribute_elements({ids, axis, spacing})` | ✅ |
 | `constrain_elements` / `snap_to_grid` / `center_in_canvas` / `place_at` / `stack_center` | ✅ |
 | `fit_frame_around({ids, frameId, padding})` | ✅ resizes `frameId` in place |
-| `measure_elements` / `estimate_text` / `check_layout` | ✅ (bounds are the visible box, even for anchored text) |
+| `measure_elements` / `estimate_text` / `check_layout` | ✅ (bounds are the visible box, even for anchored text) — `check_layout` no longer false-flags overflow |
 | `create_group` / `add_to_group` / `dissolve_group` / `rename_group` | ✅ |
 | `save_to_collection` → `list_collection_items` → `get_collection_item` → `insert_collection_item` | ✅ full roundtrip (guests save to a local collection) |
 
@@ -157,15 +176,17 @@ a bespoke design it is usually cleaner to hand-build with `add_element` +
 - **Remote images** (`add_icon` with an `href`, any http image URL) — never render.
 - **`replace_defs`** with raw SVG string — rejected; use the `{gradients:[...]}` shape.
 - **`navigate_to_page`** — sandbox-restricted, returns a domain error.
-- **`get_canvas_screenshot` / `take_screenshot`** — very occasionally returns a
-  stale cached URL; re-call or mutate again.
-- **WebMCP disabled** ("configuration exceeds supported limits"): the page trims
-  its tool list, but if the agent runtime still refuses, it exposes fewer tools
-  after a redeploy — reset the agent runtime and refresh the tab.
-- **Bridge wedge:** if a mutation ever returns
-  `Failed to execute 'structuredClone'… Promise could not be cloned`, the page is
-  stuck — **every** write will fail until the user reloads the tab. Reads still
-  work. Stop, tell the user to reload, resume from `get_canvas_state`.
+- **`take_screenshot` / `get_canvas_screenshot`** — reflect the live canvas now;
+  a stale URL is rare. If a shot looks a step behind, call it once more.
+- **WebMCP disabled** ("configuration exceeds supported limits"): the page caps
+  its discrete tools at ~48 (rest via `call_editor_tool`). If the runtime still
+  refuses, the cap can be lowered further server-side — then reset the agent
+  runtime / NodeREPL and refresh the tab.
+- **Bridge wedge (rare):** if a mutation ever returns
+  `Failed to execute 'structuredClone'… could not be cloned`, or writes silently
+  stop landing, the transport is stuck — **every** write fails until the user
+  reloads the tab (reads still work). Stop, tell the user to reload, resume from
+  `get_canvas_state`.
 - The canvas resets on page reload (fresh document); the element-id counter may or
   may not reset. Guest canvases persist to this browser only (and are dropped if
   storage fills — you'll see a warning toast). Finish in one session or

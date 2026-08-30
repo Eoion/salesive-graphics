@@ -6943,6 +6943,8 @@ export default function EditorScreen({
                     );
                 }
                 setAgentIdentity({ name: nm, avatar: av });
+                // Surface the agent to the user: jump to the Activity tab.
+                setActiveDock("activity");
                 return { name: nm, avatar: av ? "set" : null };
             },
 
