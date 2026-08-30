@@ -542,6 +542,7 @@ function makeTextPatch(baseElement, {
     return {
         text: nextText,
         textWrap: nextWrap,
+        fontSize: nextFontSize,
         ...(Number.isFinite(Number(nextWidth)) ? { width: Number(nextWidth) } : {}),
         ...(autoFitWidth && !nextWrap
             ? {
@@ -2657,17 +2658,31 @@ export default function EditorScreen({
                 lineHeight,
                 textWrap,
                 autoFitWidth = false,
+                fontWeight,
+                fontFamily,
+                textAnchor,
+                fill,
+                fontStyle,
+                letterSpacing,
             } = {}) => {
-                const current = elements.find((e) => e.id === id);
+                const current = live().find((e) => e.id === id);
                 if (!current) throw new Error(`Element "${id}" not found`);
-                const patch = makeTextPatch(current, {
-                    text,
-                    width,
-                    fontSize,
-                    lineHeight,
-                    textWrap,
-                    autoFitWidth,
-                });
+                const patch = {
+                    ...makeTextPatch(current, {
+                        text,
+                        width,
+                        fontSize,
+                        lineHeight,
+                        textWrap,
+                        autoFitWidth,
+                    }),
+                    ...(fontWeight != null ? { fontWeight: String(fontWeight) } : {}),
+                    ...(fontFamily != null ? { fontFamily: resolveFontFamily(fontFamily) } : {}),
+                    ...(textAnchor != null ? { textAnchor } : {}),
+                    ...(fill != null ? { fill } : {}),
+                    ...(fontStyle != null ? { fontStyle } : {}),
+                    ...(letterSpacing != null ? { letterSpacing: Number(letterSpacing) } : {}),
+                };
                 updateElement(id, patch);
                 return { id, ...patch };
             },
@@ -3734,8 +3749,11 @@ export default function EditorScreen({
                 padding = 0,
                 cellWidth,
                 cellHeight,
-                align = "center",
-                valign = "middle",
+                // Default to a plain top-left grid (uniform rows). Pass
+                // align:"center"/"right" or valign:"middle"/"bottom" to
+                // position each element within its cell instead.
+                align = "left",
+                valign = "top",
             } = {}) => {
                 const resolvedIds = resolveToElementIds(ids);
                 const targets = resolvedIds
@@ -3756,16 +3774,16 @@ export default function EditorScreen({
                     const row = Math.floor(i / columns);
                     const cellX = startX + col * (cw + hSpacing);
                     const cellY = startY + row * (ch + vSpacing);
-                    const left = align === "left"
-                        ? cellX + padding
-                        : align === "right"
-                          ? cellX + cw - b.width - padding
-                          : cellX + (cw - b.width) / 2;
-                    const top = valign === "top"
-                        ? cellY + padding
-                        : valign === "bottom"
-                          ? cellY + ch - b.height - padding
-                          : cellY + (ch - b.height) / 2;
+                    const left = align === "right"
+                        ? cellX + cw - b.width - padding
+                        : align === "center"
+                          ? cellX + (cw - b.width) / 2
+                          : cellX + padding;
+                    const top = valign === "bottom"
+                        ? cellY + ch - b.height - padding
+                        : valign === "middle"
+                          ? cellY + (ch - b.height) / 2
+                          : cellY + padding;
                     const patch = placePatch(el, Math.round(left), Math.round(top));
                     updateElement(el.id, patch);
                     updates.push({ id: el.id, ...patch });
