@@ -1171,23 +1171,7 @@ export default function EditorScreen({
         if (isGuest) storeGuestGroups(groups);
     }, [isGuest, groups]);
 
-    // Warn loudly if local persistence starts failing (quota) — otherwise a
-    // reload silently loses the whole canvas.
     const persistWarnedRef = useRef(false);
-    useEffect(() => {
-        if (persistStatus === "ok") {
-            persistWarnedRef.current = false;
-            return;
-        }
-        if (persistWarnedRef.current) return;
-        persistWarnedRef.current = true;
-        toast.error(
-            persistStatus === "partial"
-                ? "This device's storage is full — the canvas is being saved without embedded images. Save to your account to keep everything."
-                : "Could not save the canvas locally (storage full). Your work will be lost on reload — save to your account now.",
-            { duration: 8000 },
-        );
-    }, [persistStatus]);
     const groupCounterRef = useRef(0);
 
     // Component-level group helpers (stable callbacks usable outside clientToolHandlers)
@@ -1280,6 +1264,24 @@ export default function EditorScreen({
 
     const { animOverrides, scheduleFlip, scheduleFadeIn, scheduleFlipBatch } =
         useAiAnimations();
+
+    // Warn loudly if local persistence starts failing (quota) — otherwise a
+    // reload silently loses the whole canvas. (Must sit after useEditorState so
+    // `persistStatus` is initialized before this dep array is evaluated.)
+    useEffect(() => {
+        if (persistStatus === "ok") {
+            persistWarnedRef.current = false;
+            return;
+        }
+        if (persistWarnedRef.current) return;
+        persistWarnedRef.current = true;
+        toast.error(
+            persistStatus === "partial"
+                ? "This device's storage is full — the canvas is being saved without embedded images. Save to your account to keep everything."
+                : "Could not save the canvas locally (storage full). Your work will be lost on reload — save to your account now.",
+            { duration: 8000 },
+        );
+    }, [persistStatus]);
 
     useEffect(() => {
         setIsPublic(canvasRecord?.public ?? true);
