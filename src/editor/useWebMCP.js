@@ -7,8 +7,25 @@
 // same capabilities as the built-in assistant.
 
 import { useCallback, useEffect, useRef } from 'react';
-import '@mcp-b/global'; // side-effect: polyfills document.modelContext when absent
 import { normalizeToolArgs } from './toolArgs.js';
+
+// The WebMCP polyfill is loaded lazily (after first paint) rather than as a
+// top-level side-effect import, so its init can't interleave with the app's
+// module evaluation / first React render.
+let _polyfillPromise = null;
+function ensureWebMcpPolyfill() {
+  if (typeof document === 'undefined') return Promise.resolve(null);
+  if (document.modelContext?.registerTool) return Promise.resolve(document.modelContext);
+  if (!_polyfillPromise) {
+    _polyfillPromise = import('@mcp-b/global')
+      .then(() => document.modelContext || null)
+      .catch((e) => {
+        console.warn('[WebMCP] failed to load polyfill', e);
+        return null;
+      });
+  }
+  return _polyfillPromise;
+}
 
 // Human-readable descriptions for the tools whose purpose isn't obvious from the
 // name. Anything not listed here falls back to a generated description.
@@ -23,8 +40,12 @@ const TOOL_DESCRIPTIONS = {
   get_element_screenshot: 'Capture a PNG screenshot cropped to one element. Args: { id }.',
   get_region_screenshot: 'Capture a PNG screenshot of a rectangular region. Args: { x, y, width, height }.',
   review_canvas_region: 'Render a region and return it for visual review. Args: { x, y, width, height }.',
-  find_text_elements: 'Find text elements matching a query string. Args: { query, caseSensitive?, regex? }.',
-  measure_elements: 'Return the combined bounding box and per-element metrics. Args: { ids }.',
+  find_text_elements: 'Find text elements. Args: { query (plain substring, case-insensitive), regex?: true to treat query as a RegExp, flags?, select? }.',
+  measure_elements: 'Bounding box + per-element metrics in rendered space (textAnchor-aware). Args: { ids }.',
+  align_to_element: 'Align elements to a reference element. Args: { ids, refId (aka targetId), align: "left"|"right"|"top"|"bottom"|"center-h"|"center-v"|"center" }.',
+  fit_frame_around: 'Size a rect to wrap elements. Args: { ids, frameId? (resize this rect instead of creating one), padding?, fill?, rx? }.',
+  arrange_row: 'Lay elements out in a row starting at { x, y } (or startX/startY). Args: { ids, x?, y?, gap?, alignment?: "top"|"center"|"bottom" }.',
+  arrange_column: 'Lay elements out in a column starting at { x, y } (or startX/startY). Args: { ids, x?, y?, gap?, alignment?: "left"|"center"|"right" }.',
   check_layout: 'Analyse the layout for overflow, overlaps and out-of-bounds elements.',
   estimate_text: 'Estimate the rendered width/height of a text string. Args: { text, fontSize, fontFamily?, width? }.',
   list_collection_items: 'List saved collection items available to insert.',
@@ -70,21 +91,17 @@ const TOOL_DESCRIPTIONS = {
   align_elements: 'Align elements. Args: { ids, align: "left"|"right"|"top"|"bottom"|"center-h"|"center-v"|"center", relativeTo?: "group" (shared edge, default for 2+) | "canvas", margin? }.',
   distribute_elements: 'Distribute elements evenly. Args: { ids, axis, ... }.',
   constrain_elements: 'Keep elements inside the canvas with padding. Args: { ids?, padding?, ignoreIds? }.',
-  arrange_row: 'Lay elements out in a horizontal row. Args: { ids, x?, y?, gap?, alignment? }.',
-  arrange_column: 'Lay elements out in a vertical column. Args: { ids, x?, y?, gap?, alignment? }.',
-  arrange_grid: 'Lay elements out in a grid. Args: { ids, x?, y?, columns?, colGap?, rowGap? }.',
-  align_grid: 'Snap elements onto a grid alignment. Args: { ids, ... }.',
+  arrange_grid: 'Lay elements out in a grid from an { x, y } origin. Args: { ids, x?, y?, columns?, colGap?, rowGap? }.',
+  align_grid: 'Snap elements onto a grid alignment. Args: { ids, x?, y?, columns? }.',
   snap_to_grid: 'Snap element positions (and optionally sizes) to a grid. Args: { ids?, gridSize?, snapSize? }.',
-  align_to_element: 'Align elements relative to a reference element. Args: { ids, targetId, edge }.',
-  fit_frame_around: 'Resize/position a frame element to wrap the given elements. Args: { frameId, ids, padding? }.',
   center_in_canvas: 'Centre elements within the canvas. Args: { ids, axis? }.',
   place_at: 'Place an element at a canvas anchor. Args: { id, anchor?, margin? }.',
   stack_center: 'Stack elements centred on a point. Args: { ids, cx?, cy?, preserveRelative? }.',
   load_font: 'Load a Google font and optionally apply it. Args: { fontFamily, ids?, applyToAll? }.',
   resize_canvas: 'Resize the canvas. Args: { width, height, constrain? }.',
   insert_svg: 'Parse and insert raw SVG markup. Args: { svg, placement? "original"|"center" (default "original", keeps coordinates) }.',
-  replace_defs: 'Replace the canvas <defs> (gradients, variables, fonts). Args: { defs }. Prefer add_gradient for adding one gradient.',
-  add_gradient: 'Define a gradient and get the fill string to use. Args: { type?: "linear"|"radial", stops: [{ offset: 0-100, stopColor, stopOpacity? }], id?, x1?,y1?,x2?,y2? | cx?,cy?,r? }. Returns { id, fill: "url(#id)" } — set that as an element fill.',
+  replace_defs: 'Merge into the canvas <defs> — adds/replaces gradients by id, keeps the rest. Args: { defs: { gradients: [...] }, replace?: true to wipe first }. Not for raw SVG markup; use add_gradient.',
+  add_gradient: 'Define a gradient and get the fill string to use. Args: { type?: "linear"|"radial", stops: [{ offset (0-100 or 0-1), stopColor, stopOpacity? }], id?, x1?,y1?,x2?,y2? | cx?,cy?,r? — coords accept 0-100 or 0-1 fractions }. Returns { id, fill: "url(#id)" }.',
   list_gradients: 'List gradients currently defined on the canvas, with their url(#id) fill strings.',
   set_template_name: 'Set the template / document name. Args: { name }.',
   get_editor_guide: 'Return a guide explaining how to drive this SVG editor with these tools — call it before making changes. Optional args: { topic }.',
@@ -122,10 +139,14 @@ const TOOL_SCHEMAS = {
   batch_update_texts: { updates: OBJ_ARRAY },
   align_elements: { ids: STR_ARRAY, align: STR, alignment: STR, relativeTo: STR, margin: NUM },
   distribute_elements: { ids: STR_ARRAY, axis: STR, spacing: NUM },
-  arrange_row: { ids: STR_ARRAY, x: NUM, y: NUM, gap: NUM, alignment: STR },
-  arrange_column: { ids: STR_ARRAY, x: NUM, y: NUM, gap: NUM, alignment: STR },
-  arrange_grid: { ids: STR_ARRAY, x: NUM, y: NUM, columns: NUM, colGap: NUM, rowGap: NUM },
-  align_grid: { ids: STR_ARRAY },
+  arrange_row: { ids: STR_ARRAY, x: NUM, y: NUM, startX: NUM, startY: NUM, gap: NUM, alignment: STR },
+  arrange_column: { ids: STR_ARRAY, x: NUM, y: NUM, startX: NUM, startY: NUM, gap: NUM, alignment: STR },
+  arrange_grid: { ids: STR_ARRAY, x: NUM, y: NUM, startX: NUM, startY: NUM, columns: NUM, colGap: NUM, rowGap: NUM },
+  align_grid: { ids: STR_ARRAY, x: NUM, y: NUM, columns: NUM },
+  align_to_element: { ids: STR_ARRAY, refId: STR, targetId: STR, align: STR },
+  fit_frame_around: { ids: STR_ARRAY, frameId: STR, padding: NUM, fill: STR, rx: NUM },
+  find_text_elements: { query: STR, pattern: STR, regex: { type: 'boolean' }, flags: STR, select: { type: 'boolean' } },
+  replace_defs: { defs: { type: 'object', additionalProperties: true }, replace: { type: 'boolean' } },
   snap_to_grid: { ids: STR_ARRAY, gridSize: NUM, snapSize: { type: 'boolean' } },
   constrain_elements: { ids: STR_ARRAY, padding: NUM, ignoreIds: STR_ARRAY },
   center_in_canvas: { ids: STR_ARRAY, axis: STR },
@@ -181,19 +202,27 @@ export function useWebMCP(clientToolHandlers, { enabled = true, onEvent } = {}) 
   }, []);
 
   useEffect(() => {
-    if (!enabled) return;
-    const modelContext = typeof document !== 'undefined' ? document.modelContext : null;
-    if (!modelContext?.registerTool) {
-      console.warn('[WebMCP] document.modelContext unavailable; editor tools not exposed.');
-      return;
-    }
-
+    if (!enabled) return undefined;
     const controller = new AbortController();
-    const names = Object.keys(clientToolHandlers || {}).filter((n) => !n.startsWith('editor.'));
+    let cancelled = false;
 
-    for (const name of names) {
-      try {
-        const maybePromise = modelContext.registerTool(
+    ensureWebMcpPolyfill().then((modelContext) => {
+      if (cancelled || controller.signal.aborted) return;
+      if (!modelContext?.registerTool) {
+        console.warn('[WebMCP] document.modelContext unavailable; editor tools not exposed.');
+        return;
+      }
+      registerAll(modelContext, controller);
+    });
+
+    return () => { cancelled = true; controller.abort(); };
+
+    function registerAll(modelContext, ctrl) {
+      const names = Object.keys(clientToolHandlers || {}).filter((n) => !n.startsWith('editor.'));
+
+      for (const name of names) {
+        try {
+          const maybePromise = modelContext.registerTool(
           {
             name,
             description: describe(name),
@@ -218,15 +247,15 @@ export function useWebMCP(clientToolHandlers, { enabled = true, onEvent } = {}) 
               }
             },
           },
-          { signal: controller.signal },
-        );
-        if (maybePromise?.catch) maybePromise.catch((e) => console.warn('[WebMCP] registerTool failed', name, e));
-      } catch (e) {
-        console.warn('[WebMCP] registerTool threw', name, e);
+          { signal: ctrl.signal },
+          );
+          if (maybePromise?.catch) maybePromise.catch((e) => console.warn('[WebMCP] registerTool failed', name, e));
+        } catch (e) {
+          console.warn('[WebMCP] registerTool threw', name, e);
+        }
       }
-    }
 
-    console.info(`[WebMCP] exposed ${names.length} editor tools to AI agents.`);
-    return () => controller.abort();
+      console.info(`[WebMCP] exposed ${names.length} editor tools to AI agents.`);
+    }
   }, [enabled, clientToolHandlers, emit]);
 }

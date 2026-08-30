@@ -20,7 +20,8 @@ import { canvases, collections } from "../../lib/api.js";
 import { syncCounter, freshId, claimId } from "../../editor/editorConstants.js";
 import EditorToolbar from "./EditorToolbar.jsx";
 import EditorCanvas from "./EditorCanvas.jsx";
-import EditorAiChat, { uploadImageToStore, getToolLabel } from "./EditorAiChat.jsx";
+import EditorAiChat, { uploadImageToStore } from "./EditorAiChat.jsx";
+import { getToolLabel } from "../../editor/toolLabels.js";
 import { resolveLucideIconHref } from "../../editor/lucideIconSvg.js";
 import EditorPropertiesPanel from "./EditorPropertiesPanel.jsx";
 import LayersPanel from "./LayersPanel.jsx";
@@ -562,7 +563,9 @@ function makeTextPatch(baseElement, {
     };
 }
 
-const _finiteNum = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+function _finiteNum(v) {
+    return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
 
 // Normalize a loosely-specified agent element into the editor's flat schema:
 // a top-left x/y box with width/height. Accepts SVG-style geometry
@@ -643,7 +646,11 @@ function normalizeAgentElement(raw) {
 function normalizeGradientInput(input = {}) {
     const pct = (v, fallback) => {
         if (v == null) return fallback;
-        if (typeof v === "number") return Number.isFinite(v) ? `${v}%` : fallback;
+        if (typeof v === "number") {
+            if (!Number.isFinite(v)) return fallback;
+            // Accept 0–1 fractions (0.5 → "50%") as well as 0–100.
+            return v > 0 && v <= 1 ? `${v * 100}%` : `${v}%`;
+        }
         return String(v);
     };
     const stops = (Array.isArray(input.stops) ? input.stops : [])
@@ -700,6 +707,21 @@ function xFromRenderedLeft(el, left) {
         if (el.textAnchor === "end") return left + w;
     }
     return left;
+}
+
+// Rendered bounding box in canvas space (accounts for textAnchor) — layout
+// tools must read/write through this so text and shapes align consistently.
+function renderBox(el) {
+    return effectiveTextBounds(el);
+}
+
+// Build an {x?, y?} patch that puts the element's *rendered* top-left at (left, top).
+function placePatch(el, left, top) {
+    const p = {};
+    if (left != null && Number.isFinite(Number(left)))
+        p.x = xFromRenderedLeft(el, Number(left));
+    if (top != null && Number.isFinite(Number(top))) p.y = Number(top);
+    return p;
 }
 
 // Approximate WCAG relative luminance for a hex color string.
@@ -929,6 +951,35 @@ function buildRegionReview(elements, region, canvasSize, goals = []) {
 }
 
 const GUEST_GROUPS_KEY = "salesive_editor_groups";
+const LOCAL_COLLECTION_KEY = "salesive_local_collection";
+
+function loadLocalCollection() {
+    try {
+        const raw = localStorage.getItem(LOCAL_COLLECTION_KEY);
+        const arr = raw ? JSON.parse(raw) : [];
+        return Array.isArray(arr) ? arr : [];
+    } catch {
+        return [];
+    }
+}
+
+function saveLocalCollectionItem(item) {
+    const items = loadLocalCollection();
+    const entry = {
+        _id: `local_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        local: true,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        ...item,
+    };
+    items.push(entry);
+    try {
+        localStorage.setItem(LOCAL_COLLECTION_KEY, JSON.stringify(items));
+    } catch {
+        /* quota — nothing we can do */
+    }
+    return entry;
+}
 
 // Self-describing guide returned by the `get_editor_guide` tool so an agent can
 // learn how to drive this editor before it starts making changes.
@@ -980,7 +1031,11 @@ polygon, star, arrow. Every element has an \`id\`, a top-left position
 - Rounded corners: set rx on a rect (ry follows automatically).
 - align_elements: { ids, align: "left"|"right"|"top"|"bottom"|"center-h"|
   "center-v"|"center" }. With 2+ ids it aligns them to a shared edge; pass
-  relativeTo:"canvas" to align to the canvas instead.
+  relativeTo:"canvas" to align to the canvas instead. align_to_element takes
+  { ids, refId, align }.
+- arrange_row / arrange_column / arrange_grid take an { x, y } origin.
+- Layout tools measure text by its visible box even when textAnchor is
+  "middle"/"end", so text and shapes line up.
 - load_font embeds the font so it survives screenshot/export; call it before
   applying a non-system font.
 - Use fix_elements to repair NaN / zero-size elements.
@@ -1252,11 +1307,14 @@ export default function EditorScreen({
 
     const refreshCollectionItems = useCallback(async () => {
         setCollectionsLoading(true);
+        const local = loadLocalCollection();
         try {
             const response = await collections.listMine();
-            setCollectionItems(response.data.data.items || []);
+            setCollectionItems([...(response.data.data.items || []), ...local]);
         } catch (error) {
+            // Guests / offline — fall back to the local collection only.
             console.error("Failed to load collection items:", error);
+            setCollectionItems(local);
         } finally {
             setCollectionsLoading(false);
         }
@@ -2031,20 +2089,33 @@ export default function EditorScreen({
             maxY = Math.max(maxY, (element.y ?? 0) + (element.height || 0));
         }
 
+        const payload = {
+            name,
+            elements: normalizedElements,
+            thumbnail: serializeElements(normalizedElements, {
+                width: Math.max(maxX + 10, 20),
+                height: Math.max(maxY + 10, 20),
+            }),
+        };
+
+        if (isGuest) {
+            const entry = saveLocalCollectionItem(payload);
+            await refreshCollectionItems();
+            toast.success("Saved to collection (this device)");
+            return { ok: true, id: entry._id, local: true };
+        }
         try {
-            await collections.saveItem({
-                name,
-                elements: normalizedElements,
-                thumbnail: serializeElements(normalizedElements, {
-                    width: Math.max(maxX + 10, 20),
-                    height: Math.max(maxY + 10, 20),
-                }),
-            });
+            const resp = await collections.saveItem(payload);
             await refreshCollectionItems();
             toast.success("Saved to collection");
+            return { ok: true, id: resp?.data?.data?.item?._id, local: false };
         } catch (error) {
             console.error("Failed to save collection item:", error);
-            toast.error("Could not save to collection");
+            // Don't lose the save — keep it locally and tell the caller.
+            const entry = saveLocalCollectionItem(payload);
+            await refreshCollectionItems();
+            toast("Saved to collection locally (server unavailable)");
+            return { ok: true, id: entry._id, local: true, serverError: true };
         }
     }
 
@@ -2346,14 +2417,25 @@ export default function EditorScreen({
             },
             find_text_elements: async ({
                 pattern,
+                query,
+                text,
                 flags = "i",
                 ids = [],
                 select = false,
+                regex: asRegex = true,
             } = {}) => {
-                const regex = buildRegex(pattern, flags);
+                const raw = pattern ?? query ?? text;
+                if (raw == null || String(raw) === "")
+                    throw new Error("Provide a search string as `query` (or `pattern`).");
+                // Treat a plain string literally unless it looks like a regex or
+                // regex:false was passed.
+                const needle = asRegex === false
+                    ? String(raw).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+                    : String(raw);
+                const regex = buildRegex(needle, flags);
                 const pool = ids.length
-                    ? elements.filter((el) => ids.includes(el.id))
-                    : elements;
+                    ? live().filter((el) => ids.includes(el.id))
+                    : live();
                 const matches = pool
                     .filter((el) => {
                         if (el.type !== "text") return false;
@@ -2418,8 +2500,14 @@ export default function EditorScreen({
                 const collName = name || (targetEls.length === 1
                     ? (targetEls[0].text || targetEls[0].id)
                     : `${targetEls.length} elements`);
-                await handleSaveToCollection(targetEls, collName);
-                return { saved: true, name: collName, count: targetEls.length };
+                const res = await handleSaveToCollection(targetEls, collName);
+                return {
+                    saved: !!res?.ok,
+                    id: res?.id,
+                    local: !!res?.local,
+                    name: collName,
+                    count: targetEls.length,
+                };
             },
 
             // ── Groups ────────────────────────────────────────────────────────────
@@ -2985,51 +3073,49 @@ export default function EditorScreen({
                         updates.push({ id: el.id, ...patch });
                     }
                 } else if (relativeTo === "group") {
-                    // Align elements relative to each other (group bounding box).
-                    // left/right/center-h align on the x-axis; top/bottom/center-v on y-axis.
-                    const minX = Math.min(...targets.map((e) => e.x || 0));
-                    const maxX = Math.max(...targets.map((e) => (e.x || 0) + (e.width || 0)));
-                    const minY = Math.min(...targets.map((e) => e.y || 0));
-                    const maxY = Math.max(...targets.map((e) => (e.y || 0) + (e.height || 0)));
+                    // Align elements to their shared bounding box (rendered space).
+                    const boxes = targets.map(renderBox);
+                    const minX = Math.min(...boxes.map((b) => b.x));
+                    const maxX = Math.max(...boxes.map((b) => b.x + b.width));
+                    const minY = Math.min(...boxes.map((b) => b.y));
+                    const maxY = Math.max(...boxes.map((b) => b.y + b.height));
                     const groupCX = (minX + maxX) / 2;
                     const groupCY = (minY + maxY) / 2;
-                    for (const el of targets) {
-                        const w = el.width || 0;
-                        const h = el.height || 0;
-                        let patch = {};
-                        if (align === "left") patch = { x: minX };
-                        else if (align === "right") patch = { x: maxX - w };
-                        else if (align === "center-h") patch = { x: Math.round(groupCX - w / 2) };
-                        else if (align === "top") patch = { y: minY };
-                        else if (align === "bottom") patch = { y: maxY - h };
-                        else if (align === "center-v") patch = { y: Math.round(groupCY - h / 2) };
-                        else if (align === "center") patch = {
-                            x: Math.round(groupCX - w / 2),
-                            y: Math.round(groupCY - h / 2),
-                        };
-                        if (!Object.keys(patch).length) continue;
+                    targets.forEach((el, i) => {
+                        const b = boxes[i];
+                        let left, top;
+                        if (align === "left") left = minX;
+                        else if (align === "right") left = maxX - b.width;
+                        else if (align === "center-h") left = Math.round(groupCX - b.width / 2);
+                        else if (align === "top") top = minY;
+                        else if (align === "bottom") top = maxY - b.height;
+                        else if (align === "center-v") top = Math.round(groupCY - b.height / 2);
+                        else if (align === "center") {
+                            left = Math.round(groupCX - b.width / 2);
+                            top = Math.round(groupCY - b.height / 2);
+                        }
+                        const patch = placePatch(el, left, top);
+                        if (!Object.keys(patch).length) return;
                         updateElement(el.id, patch);
                         flipEntries.push({ id: el.id, oldEl: el, newEl: { ...el, ...patch } });
                         updates.push({ id: el.id, ...patch });
-                    }
+                    });
                 } else {
                     for (const el of targets) {
-                        const w = el.width || 0;
-                        const h = el.height || 0;
-                        let patch = {};
-                        if (align === "left") patch = { x: margin };
-                        else if (align === "right") patch = { x: W - w - margin };
-                        else if (align === "center-h")
-                            patch = { x: Math.round((W - w) / 2) };
-                        else if (align === "top") patch = { y: margin };
-                        else if (align === "bottom") patch = { y: H - h - margin };
-                        else if (align === "center-v")
-                            patch = { y: Math.round((H - h) / 2) };
-                        else if (align === "center")
-                            patch = {
-                                x: Math.round((W - w) / 2),
-                                y: Math.round((H - h) / 2),
-                            };
+                        const b = renderBox(el);
+                        let left, top;
+                        if (align === "left") left = margin;
+                        else if (align === "right") left = W - b.width - margin;
+                        else if (align === "center-h") left = Math.round((W - b.width) / 2);
+                        else if (align === "top") top = margin;
+                        else if (align === "bottom") top = H - b.height - margin;
+                        else if (align === "center-v") top = Math.round((H - b.height) / 2);
+                        else if (align === "center") {
+                            left = Math.round((W - b.width) / 2);
+                            top = Math.round((H - b.height) / 2);
+                        }
+                        const patch = placePatch(el, left, top);
+                        if (!Object.keys(patch).length) continue;
                         updateElement(el.id, patch);
                         flipEntries.push({ id: el.id, oldEl: el, newEl: { ...el, ...patch } });
                         updates.push({ id: el.id, ...patch });
@@ -3481,52 +3567,49 @@ export default function EditorScreen({
             arrange_row: async ({
                 ids = [],
                 childGroups = null,
-                startX = 0,
-                y = 0,
+                startX, x,
+                startY, y,
                 gap = 10,
-                alignment = "center",
+                alignment = "top",
             } = {}) => {
-                // Auto-expand group IDs: each group becomes [anchorId, ...childIds].
-                // childGroups overrides this if provided explicitly.
-                function toArrangeGroups(inputIds) {
-                    return inputIds.map(id =>
-                        groups[id] ? groups[id].elementIds : [id]
-                    );
-                }
+                const originX = nn(startX ?? x, 0);
+                const originY = nn(startY ?? y, 0);
+                const toArrangeGroups = (inputIds) =>
+                    inputIds.map((id) => (groups[id] ? groups[id].elementIds : [id]));
                 const arrangeGroups = childGroups ?? toArrangeGroups(ids);
                 const anchors = arrangeGroups
-                    .map((g) => elements.find((e) => e.id === g[0]))
+                    .map((g) => live().find((e) => e.id === g[0]))
                     .filter(Boolean);
                 if (!anchors.length) return { arranged: 0 };
-                const maxH = Math.max(...anchors.map((e) => e.height || 0));
-                let curX = startX;
+                const maxH = Math.max(...anchors.map((e) => renderBox(e).height));
+                let curX = originX;
                 const updates = [];
                 for (const [i, el] of anchors.entries()) {
-                    const elH = el.height || 0;
+                    const b = renderBox(el);
                     const elY =
-                        alignment === "center"
-                            ? y + (maxH - elH) / 2
+                        alignment === "center" || alignment === "middle"
+                            ? originY + (maxH - b.height) / 2
                             : alignment === "bottom"
-                              ? y + maxH - elH
-                              : y;
-                    const dx = curX - (el.x || 0);
-                    const dy = elY - (el.y || 0);
-                    updateElement(el.id, { x: curX, y: elY });
-                    updates.push({ id: el.id, x: curX, y: elY });
+                              ? originY + maxH - b.height
+                              : originY;
+                    const patch = placePatch(el, curX, elY);
+                    const dx = (patch.x ?? el.x ?? 0) - (el.x ?? 0);
+                    const dy = (patch.y ?? el.y ?? 0) - (el.y ?? 0);
+                    updateElement(el.id, patch);
+                    updates.push({ id: el.id, ...patch });
                     for (const childId of (arrangeGroups[i] ?? []).slice(1)) {
-                        const child = elements.find((e) => e.id === childId);
+                        const child = live().find((e) => e.id === childId);
                         if (child) {
-                            const cx = (child.x || 0) + dx;
-                            const cy = (child.y || 0) + dy;
-                            updateElement(childId, { x: cx, y: cy });
-                            updates.push({ id: childId, x: cx, y: cy });
+                            const cp = { x: nn(child.x) + dx, y: nn(child.y) + dy };
+                            updateElement(childId, cp);
+                            updates.push({ id: childId, ...cp });
                         }
                     }
-                    curX += (el.width || 0) + gap;
+                    curX += b.width + gap;
                 }
                 return {
                     arranged: updates.length,
-                    totalWidth: curX - gap - startX,
+                    totalWidth: curX - gap - originX,
                     rowHeight: maxH,
                     updates,
                 };
@@ -3535,51 +3618,50 @@ export default function EditorScreen({
             arrange_column: async ({
                 ids = [],
                 childGroups = null,
-                x = 0,
-                startY = 0,
+                x, startX,
+                startY, y,
                 gap = 10,
                 alignment = "left",
             } = {}) => {
-                function toArrangeGroups(inputIds) {
-                    return inputIds.map(id =>
-                        groups[id] ? groups[id].elementIds : [id]
-                    );
-                }
+                const originX = nn(x ?? startX, 0);
+                const originY = nn(startY ?? y, 0);
+                const toArrangeGroups = (inputIds) =>
+                    inputIds.map((id) => (groups[id] ? groups[id].elementIds : [id]));
                 const arrangeGroups = childGroups ?? toArrangeGroups(ids);
                 const anchors = arrangeGroups
-                    .map((g) => elements.find((e) => e.id === g[0]))
+                    .map((g) => live().find((e) => e.id === g[0]))
                     .filter(Boolean);
                 if (!anchors.length) return { arranged: 0 };
-                const maxW = Math.max(...anchors.map((e) => e.width || 0));
-                let curY = startY;
+                const maxW = Math.max(...anchors.map((e) => renderBox(e).width));
+                let curY = originY;
                 const updates = [];
                 for (const [i, el] of anchors.entries()) {
-                    const elW = el.width || 0;
-                    const elX =
-                        alignment === "center"
-                            ? x + (maxW - elW) / 2
+                    const b = renderBox(el);
+                    const elLeft =
+                        alignment === "center" || alignment === "middle"
+                            ? originX + (maxW - b.width) / 2
                             : alignment === "right"
-                              ? x + maxW - elW
-                              : x;
-                    const dx = elX - (el.x || 0);
-                    const dy = curY - (el.y || 0);
-                    updateElement(el.id, { x: elX, y: curY });
-                    updates.push({ id: el.id, x: elX, y: curY });
+                              ? originX + maxW - b.width
+                              : originX;
+                    const patch = placePatch(el, elLeft, curY);
+                    const dx = (patch.x ?? el.x ?? 0) - (el.x ?? 0);
+                    const dy = (patch.y ?? el.y ?? 0) - (el.y ?? 0);
+                    updateElement(el.id, patch);
+                    updates.push({ id: el.id, ...patch });
                     for (const childId of (arrangeGroups[i] ?? []).slice(1)) {
-                        const child = elements.find((e) => e.id === childId);
+                        const child = live().find((e) => e.id === childId);
                         if (child) {
-                            const cx = (child.x || 0) + dx;
-                            const cy = (child.y || 0) + dy;
-                            updateElement(childId, { x: cx, y: cy });
-                            updates.push({ id: childId, x: cx, y: cy });
+                            const cp = { x: nn(child.x) + dx, y: nn(child.y) + dy };
+                            updateElement(childId, cp);
+                            updates.push({ id: childId, ...cp });
                         }
                     }
-                    curY += (el.height || 0) + gap;
+                    curY += b.height + gap;
                 }
                 return {
                     arranged: updates.length,
                     columnWidth: maxW,
-                    totalHeight: curY - gap - startY,
+                    totalHeight: curY - gap - originY,
                     updates,
                 };
             },
@@ -3587,46 +3669,45 @@ export default function EditorScreen({
             arrange_grid: async ({
                 ids = [],
                 childGroups = null,
-                x = 0,
-                y = 0,
+                x, startX,
+                y, startY,
                 columns = 3,
                 colGap = 12,
                 rowGap = 12,
                 cellWidth,
                 cellHeight,
             } = {}) => {
-                function toArrangeGroups(inputIds) {
-                    return inputIds.map(id =>
-                        groups[id] ? groups[id].elementIds : [id]
-                    );
-                }
+                const originX = nn(x ?? startX, 0);
+                const originY = nn(y ?? startY, 0);
+                const toArrangeGroups = (inputIds) =>
+                    inputIds.map((id) => (groups[id] ? groups[id].elementIds : [id]));
                 const arrangeGroups = childGroups ?? toArrangeGroups(ids);
                 const anchors = arrangeGroups
-                    .map((g) => elements.find((e) => e.id === g[0]))
+                    .map((g) => live().find((e) => e.id === g[0]))
                     .filter(Boolean);
                 if (!anchors.length) return { arranged: 0 };
                 const cw =
-                    cellWidth ?? Math.max(...anchors.map((e) => e.width || 0));
+                    cellWidth ?? Math.max(...anchors.map((e) => renderBox(e).width));
                 const ch =
                     cellHeight ??
-                    Math.max(...anchors.map((e) => e.height || 0));
+                    Math.max(...anchors.map((e) => renderBox(e).height));
                 const updates = [];
                 anchors.forEach((el, i) => {
                     const col = i % columns;
                     const row = Math.floor(i / columns);
-                    const nx = x + col * (cw + colGap);
-                    const ny = y + row * (ch + rowGap);
-                    const dx = nx - (el.x || 0);
-                    const dy = ny - (el.y || 0);
-                    updateElement(el.id, { x: nx, y: ny });
-                    updates.push({ id: el.id, x: nx, y: ny });
+                    const cellLeft = originX + col * (cw + colGap);
+                    const cellTop = originY + row * (ch + rowGap);
+                    const patch = placePatch(el, cellLeft, cellTop);
+                    const dx = (patch.x ?? el.x ?? 0) - (el.x ?? 0);
+                    const dy = (patch.y ?? el.y ?? 0) - (el.y ?? 0);
+                    updateElement(el.id, patch);
+                    updates.push({ id: el.id, ...patch });
                     for (const childId of (arrangeGroups[i] ?? []).slice(1)) {
-                        const child = elements.find((e) => e.id === childId);
+                        const child = live().find((e) => e.id === childId);
                         if (child) {
-                            const cx = (child.x || 0) + dx;
-                            const cy = (child.y || 0) + dy;
-                            updateElement(childId, { x: cx, y: cy });
-                            updates.push({ id: childId, x: cx, y: cy });
+                            const cp = { x: nn(child.x) + dx, y: nn(child.y) + dy };
+                            updateElement(childId, cp);
+                            updates.push({ id: childId, ...cp });
                         }
                     }
                 });
@@ -3656,35 +3737,36 @@ export default function EditorScreen({
             } = {}) => {
                 const resolvedIds = resolveToElementIds(ids);
                 const targets = resolvedIds
-                    .map((id) => elements.find((e) => e.id === id))
+                    .map((id) => live().find((e) => e.id === id))
                     .filter(Boolean);
                 if (!targets.length) return { aligned: 0, updates: [] };
-                const minX = Math.min(...targets.map((e) => e.x || 0));
-                const minY = Math.min(...targets.map((e) => e.y || 0));
-                const startX = x ?? minX;
-                const startY = y ?? minY;
-                const cw = cellWidth ?? Math.max(...targets.map((e) => e.width || 0));
-                const ch = cellHeight ?? Math.max(...targets.map((e) => e.height || 0));
+                const boxes = targets.map(renderBox);
+                const minX = Math.min(...boxes.map((b) => b.x));
+                const minY = Math.min(...boxes.map((b) => b.y));
+                const startX = x != null ? nn(x) : minX;
+                const startY = y != null ? nn(y) : minY;
+                const cw = cellWidth ?? Math.max(...boxes.map((b) => b.width));
+                const ch = cellHeight ?? Math.max(...boxes.map((b) => b.height));
                 const updates = [];
                 targets.forEach((el, i) => {
+                    const b = boxes[i];
                     const col = i % columns;
                     const row = Math.floor(i / columns);
                     const cellX = startX + col * (cw + hSpacing);
                     const cellY = startY + row * (ch + vSpacing);
-                    const w = el.width || 0;
-                    const h = el.height || 0;
-                    const nx = align === "left"
+                    const left = align === "left"
                         ? cellX + padding
                         : align === "right"
-                          ? cellX + cw - w - padding
-                          : cellX + (cw - w) / 2;
-                    const ny = valign === "top"
+                          ? cellX + cw - b.width - padding
+                          : cellX + (cw - b.width) / 2;
+                    const top = valign === "top"
                         ? cellY + padding
                         : valign === "bottom"
-                          ? cellY + ch - h - padding
-                          : cellY + (ch - h) / 2;
-                    updateElement(el.id, { x: Math.round(nx), y: Math.round(ny) });
-                    updates.push({ id: el.id, x: Math.round(nx), y: Math.round(ny) });
+                          ? cellY + ch - b.height - padding
+                          : cellY + (ch - b.height) / 2;
+                    const patch = placePatch(el, Math.round(left), Math.round(top));
+                    updateElement(el.id, patch);
+                    updates.push({ id: el.id, ...patch });
                 });
                 return {
                     aligned: updates.length,
@@ -3723,43 +3805,44 @@ export default function EditorScreen({
 
             align_to_element: async ({
                 ids = [],
-                refId,
+                refId, targetId, referenceId, reference, target, anchorId, to,
                 align = "center",
             } = {}) => {
-                const ref = elements.find((e) => e.id === refId);
+                const rId = refId ?? targetId ?? referenceId ?? reference ?? target ?? anchorId ?? to;
+                const ref = live().find((e) => e.id === rId);
                 if (!ref)
-                    throw new Error(`Reference element "${refId}" not found`);
+                    throw new Error(
+                        `Reference element "${rId}" not found — pass it as refId (or targetId).`,
+                    );
+                const rb = renderBox(ref);
                 const targets = ids
-                    .map((id) => elements.find((e) => e.id === id))
-                    .filter((e) => e && e.id !== refId);
+                    .map((id) => live().find((e) => e.id === id))
+                    .filter((e) => e && e.id !== rId);
                 const updates = [];
                 for (const el of targets) {
-                    const w = el.width || 0,
-                        h = el.height || 0;
-                    let patch = {};
-                    if (align === "left") patch = { x: ref.x };
-                    else if (align === "right")
-                        patch = { x: ref.x + (ref.width || 0) - w };
-                    else if (align === "center-h")
-                        patch = { x: ref.x + (ref.width || 0) / 2 - w / 2 };
-                    else if (align === "top") patch = { y: ref.y };
-                    else if (align === "bottom")
-                        patch = { y: ref.y + (ref.height || 0) - h };
-                    else if (align === "center-v")
-                        patch = { y: ref.y + (ref.height || 0) / 2 - h / 2 };
-                    else if (align === "center")
-                        patch = {
-                            x: ref.x + (ref.width || 0) / 2 - w / 2,
-                            y: ref.y + (ref.height || 0) / 2 - h / 2,
-                        };
+                    const b = renderBox(el);
+                    let left, top;
+                    if (align === "left") left = rb.x;
+                    else if (align === "right") left = rb.x + rb.width - b.width;
+                    else if (align === "center-h") left = rb.x + rb.width / 2 - b.width / 2;
+                    else if (align === "top") top = rb.y;
+                    else if (align === "bottom") top = rb.y + rb.height - b.height;
+                    else if (align === "center-v") top = rb.y + rb.height / 2 - b.height / 2;
+                    else if (align === "center") {
+                        left = rb.x + rb.width / 2 - b.width / 2;
+                        top = rb.y + rb.height / 2 - b.height / 2;
+                    }
+                    const patch = placePatch(el, left, top);
+                    if (!Object.keys(patch).length) continue;
                     updateElement(el.id, patch);
                     updates.push({ id: el.id, ...patch });
                 }
-                return { aligned: updates.length, align, refId, updates };
+                return { aligned: updates.length, align, refId: rId, updates };
             },
 
             fit_frame_around: async ({
                 ids = [],
+                frameId,
                 padding = 16,
                 fill = "#ffffff",
                 stroke = "none",
@@ -3768,27 +3851,32 @@ export default function EditorScreen({
                 opacity = 1,
             } = {}) => {
                 const targets = ids
-                    .map((id) => elements.find((e) => e.id === id))
+                    .map((id) => live().find((e) => e.id === id))
                     .filter(Boolean);
                 if (!targets.length)
                     throw new Error("No valid element IDs provided");
-                const minX = Math.min(...targets.map((e) => e.x));
-                const minY = Math.min(...targets.map((e) => e.y));
-                const maxX = Math.max(
-                    ...targets.map((e) => e.x + (e.width || 0)),
-                );
-                const maxY = Math.max(
-                    ...targets.map((e) => e.y + (e.height || 0)),
-                );
-                syncCounter(elements);
-                const frameId = freshId("rect");
-                addElement({
-                    type: "rect",
-                    id: frameId,
+                const boxes = targets.map(renderBox);
+                const minX = Math.min(...boxes.map((b) => b.x));
+                const minY = Math.min(...boxes.map((b) => b.y));
+                const maxX = Math.max(...boxes.map((b) => b.x + b.width));
+                const maxY = Math.max(...boxes.map((b) => b.y + b.height));
+                const geom = {
                     x: minX - padding,
                     y: minY - padding,
                     width: maxX - minX + padding * 2,
                     height: maxY - minY + padding * 2,
+                };
+                const existing = frameId && live().find((e) => e.id === frameId);
+                if (existing) {
+                    updateElement(frameId, geom);
+                    return { frameId, reused: true, ...geom };
+                }
+                syncCounter(elements);
+                const newId = freshId("rect");
+                addElement({
+                    type: "rect",
+                    id: newId,
+                    ...geom,
                     fill,
                     stroke,
                     strokeWidth: strokeWidth || 0,
@@ -3801,15 +3889,8 @@ export default function EditorScreen({
                     strokeDash: "solid",
                     strokeLinecap: "butt",
                 });
-                // Move frame behind the group
-                for (let i = 0; i < targets.length; i++) sendBackward(frameId);
-                return {
-                    frameId,
-                    x: minX - padding,
-                    y: minY - padding,
-                    width: maxX - minX + padding * 2,
-                    height: maxY - minY + padding * 2,
-                };
+                for (let i = 0; i < targets.length; i++) sendBackward(newId);
+                return { frameId: newId, reused: false, ...geom };
             },
 
             center_in_canvas: async ({ ids = [], axis = "both" } = {}) => {
@@ -3922,21 +4003,27 @@ export default function EditorScreen({
 
             measure_elements: async ({ ids = [] } = {}) => {
                 const targets = ids
-                    .map((id) => elements.find((e) => e.id === id))
+                    .map((id) => live().find((e) => e.id === id))
                     .filter(Boolean);
                 if (!targets.length) return { elements: [], group: null };
-                const measured = targets.map((el) => ({
-                    id: el.id,
-                    type: el.type,
-                    x: el.x,
-                    y: el.y,
-                    width: el.width || 0,
-                    height: el.height || 0,
-                    right: el.x + (el.width || 0),
-                    bottom: el.y + (el.height || 0),
-                    centerX: el.x + (el.width || 0) / 2,
-                    centerY: el.y + (el.height || 0) / 2,
-                }));
+                const measured = targets.map((el) => {
+                    const b = renderBox(el); // rendered box (handles textAnchor)
+                    return {
+                        id: el.id,
+                        type: el.type,
+                        x: b.x,
+                        y: b.y,
+                        width: b.width,
+                        height: b.height,
+                        right: b.x + b.width,
+                        bottom: b.y + b.height,
+                        centerX: b.x + b.width / 2,
+                        centerY: b.y + b.height / 2,
+                        ...(el.type === "text" && el.textAnchor && el.textAnchor !== "start"
+                            ? { anchorX: nn(el.x), textAnchor: el.textAnchor }
+                            : {}),
+                    };
+                });
                 const minX = Math.min(...measured.map((e) => e.x));
                 const minY = Math.min(...measured.map((e) => e.y));
                 const maxX = Math.max(...measured.map((e) => e.right));
@@ -5148,7 +5235,10 @@ export default function EditorScreen({
             } = {}) => {
                 const resolvedTableRowFont = resolveFontFamily(fontFamily);
                 syncCounter(elements);
-                if (!cells.length) return { rowId: null, cellIds: [] };
+                if (!cells.length)
+                    throw new Error(
+                        "create_table_row needs `cells` — an array of cell strings, e.g. cells:[\"Name\",\"Qty\",\"Price\"].",
+                    );
                 const cellW = width / cells.length;
                 const rowId = freshId("rect");
                 const cellIds = [];
@@ -5593,6 +5683,10 @@ export default function EditorScreen({
                 descColor = "#64748b",
                 fontFamily = "sans-serif",
             } = {}) => {
+                if (!Array.isArray(items) || !items.length)
+                    throw new Error(
+                        'create_icon_grid needs `items` — e.g. items:[{ title:"Fast", desc:"…", icon:"zap" }].',
+                    );
                 syncCounter(elements);
                 const elems = [];
                 const itemGroups = [];
@@ -5840,7 +5934,10 @@ export default function EditorScreen({
             } = {}) => {
                 syncCounter(elements);
                 const resolvedFontFamily = resolveFontFamily(fontFamily);
-                if (!items.length) return { lineId: null, items: [] };
+                if (!Array.isArray(items) || !items.length)
+                    throw new Error(
+                        'create_timeline needs `items` — e.g. items:[{ title:"Founded", subtitle:"…", date:"2021" }].',
+                    );
                 const lineId = freshId("line");
                 const elems = [
                     {
@@ -6753,13 +6850,35 @@ export default function EditorScreen({
                 const ids = addPreparedElements(prepared, { selectNew: true });
                 return { addedIds: ids, count: ids.length };
             },
-            replace_defs: async ({ defs: d = {} } = {}) => {
-                const next = { ...d };
-                if (Array.isArray(d.gradients)) {
-                    next.gradients = d.gradients.map(normalizeGradientInput);
+            // MERGES into the existing defs by default (adding/replacing gradients
+            // by id). Pass `{ replace: true }` to wipe and replace everything.
+            // Does NOT parse raw SVG markup — use add_gradient / insert_svg for that.
+            replace_defs: async ({ defs: d = {}, replace = false } = {}) => {
+                if (typeof d === "string") {
+                    throw new Error(
+                        "replace_defs expects a defs object like " +
+                            '{ gradients: [{ id, type, stops }] }, not SVG markup. ' +
+                            "Use add_gradient for gradients or insert_svg for markup.",
+                    );
                 }
-                setDefsFromImport(next);
-                return { ok: true, gradients: (next.gradients || []).map((g) => g.id) };
+                const incomingGradients = Array.isArray(d.gradients)
+                    ? d.gradients.map(normalizeGradientInput)
+                    : [];
+                if (replace) {
+                    setDefsFromImport({ ...d, gradients: incomingGradients });
+                    return { ok: true, replaced: true, gradients: incomingGradients.map((g) => g.id) };
+                }
+                const byId = new Map((defs.gradients || []).map((g) => [g.id, g]));
+                for (const g of incomingGradients) byId.set(g.id, g);
+                setDefsFromImport({
+                    ...defs,
+                    gradients: [...byId.values()],
+                    variables: [
+                        ...(defs.variables || []),
+                        ...(Array.isArray(d.variables) ? d.variables : []),
+                    ],
+                });
+                return { ok: true, merged: true, gradients: incomingGradients.map((g) => g.id) };
             },
 
             // ── Gradients ─────────────────────────────────────────────────────────

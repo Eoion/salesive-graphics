@@ -1,6 +1,6 @@
-import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
-import { icons as lucideIcons } from 'lucide-react';
+// Lazily resolves a Lucide icon name to an inline SVG data URL. The heavy deps
+// (react-dom/server, the full lucide-react icon set) are dynamically imported so
+// they stay out of the main bundle and its init order.
 
 function toPascalCase(name) {
   return String(name || '')
@@ -12,11 +12,30 @@ function toPascalCase(name) {
     .join('');
 }
 
-// Resolve a Lucide icon name ("music", "arrow-right", "ArrowRight") to an inline
-// SVG data URL usable as an <image> href. Returns null if the name is unknown.
-export function resolveLucideIconHref(name, { color = 'currentColor', strokeWidth = 2 } = {}) {
-  const key = toPascalCase(name);
-  const Icon = lucideIcons[key] || lucideIcons[name];
+let _modsPromise = null;
+function loadMods() {
+  if (!_modsPromise) {
+    _modsPromise = Promise.all([
+      import('react'),
+      import('react-dom/server'),
+      import('lucide-react'),
+    ]).then(([react, server, lucide]) => ({
+      createElement: react.createElement || react.default.createElement,
+      renderToStaticMarkup: server.renderToStaticMarkup,
+      icons: lucide.icons,
+    }));
+  }
+  return _modsPromise;
+}
+
+// Resolve "music" / "arrow-right" / "ArrowRight" → data:image/svg+xml URL, or
+// null if the name is unknown.
+export async function resolveLucideIconHref(
+  name,
+  { color = 'currentColor', strokeWidth = 2 } = {},
+) {
+  const { createElement, renderToStaticMarkup, icons } = await loadMods();
+  const Icon = icons[toPascalCase(name)] || icons[name];
   if (!Icon) return null;
   const svg = renderToStaticMarkup(
     createElement(Icon, {
@@ -32,8 +51,4 @@ export function resolveLucideIconHref(name, { color = 'currentColor', strokeWidt
     }),
   );
   return `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svg)))}`;
-}
-
-export function isKnownLucideIcon(name) {
-  return Boolean(lucideIcons[toPascalCase(name)] || lucideIcons[name]);
 }
