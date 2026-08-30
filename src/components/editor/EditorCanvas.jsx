@@ -187,10 +187,12 @@ function RenderText({ el }) {
 
 
 function RenderImage({ el }) {
-    const hasHref = !!(el.href && el.href.trim());
+    // href may arrive from an agent as a non-string — coerce before string ops.
+    const href = typeof el.href === "string" ? el.href : "";
+    const hasHref = href.trim().length > 0;
     const processedHref = useMemo(() => {
-        return hasHref ? colorizeInlineSvgHref(el.href, el.iconColors) : null;
-    }, [el.href, el.iconColors, hasHref]);
+        return hasHref ? colorizeInlineSvgHref(href, el.iconColors) : null;
+    }, [href, el.iconColors, hasHref]);
 
     const rectProps = useMemo(() => ({
         x: el.x,

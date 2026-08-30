@@ -576,6 +576,15 @@ function normalizeAgentElement(raw) {
     const e = { ...raw };
     if (e.type === "ellipse") e.type = "circle";
 
+    // href must be a string — agents sometimes pass { url } / arrays.
+    if (e.href != null && typeof e.href !== "string") {
+        e.href =
+            (e.href && (e.href.url || e.href.src || e.href.href)) != null
+                ? String(e.href.url || e.href.src || e.href.href)
+                : "";
+    }
+    if (e.text != null && typeof e.text !== "string") e.text = String(e.text);
+
     if (e.type === "circle") {
         const rx =
             _finiteNum(e.rx) ??
@@ -2903,7 +2912,7 @@ export default function EditorScreen({
                 locked = false,
                 description = "",
             } = {}) => {
-                let resolvedHref = href;
+                let resolvedHref = typeof href === "string" ? href : "";
                 if (!resolvedHref) {
                     const iconName = name || icon;
                     if (!iconName) {
@@ -2911,10 +2920,10 @@ export default function EditorScreen({
                             "Provide an icon `name` (e.g. \"music\", \"arrow-right\" — Lucide names) or a `href`.",
                         );
                     }
-                    resolvedHref = resolveLucideIconHref(iconName, {
+                    resolvedHref = await resolveLucideIconHref(iconName, {
                         color: color || fill || "currentColor",
                     });
-                    if (!resolvedHref) {
+                    if (!resolvedHref || typeof resolvedHref !== "string") {
                         throw new Error(
                             `Unknown icon "${iconName}". Use a Lucide icon name (kebab or PascalCase).`,
                         );
