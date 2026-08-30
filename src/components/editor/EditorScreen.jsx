@@ -289,6 +289,49 @@ async function inlineGoogleFont(family, weights = [700, 400]) {
     return `data:font/woff2;base64,${arrayBufferToBase64(buf)}`;
 }
 
+// Replace `@import url(fonts.googleapis…)` with inlined base64 @font-face blocks.
+// External stylesheets/fonts don't load when the SVG is rasterized via <img>,
+// so display faces would otherwise silently fall back to a system font.
+async function inlineFontImports(svgString) {
+    const importRe =
+        /@import\s+url\((['"]?)(https:\/\/fonts\.googleapis\.com\/[^'")]+)\1\)\s*;?/g;
+    const imports = [...svgString.matchAll(importRe)];
+    if (!imports.length) return svgString;
+
+    let out = svgString;
+    for (const [full, , cssUrl] of imports) {
+        try {
+            const css = await fetch(cssUrl).then((r) => {
+                if (!r.ok) throw new Error(`css ${r.status}`);
+                return r.text();
+            });
+            const fileRe = /url\((https:\/\/[^)]+\.(?:woff2|woff|ttf))\)/g;
+            const files = [...new Set([...css.matchAll(fileRe)].map((m) => m[1]))];
+            const dataMap = new Map();
+            await Promise.all(
+                files.map(async (u) => {
+                    try {
+                        const buf = await fetch(u).then((r) => r.arrayBuffer());
+                        dataMap.set(
+                            u,
+                            `data:font/woff2;base64,${arrayBufferToBase64(buf)}`,
+                        );
+                    } catch {
+                        /* skip this weight */
+                    }
+                }),
+            );
+            const inlinedCss = css.replace(fileRe, (m, u) =>
+                dataMap.has(u) ? `url(${dataMap.get(u)})` : m,
+            );
+            out = out.replace(full, inlinedCss);
+        } catch {
+            /* leave the @import — font falls back */
+        }
+    }
+    return out;
+}
+
 async function inlineExternalImages(svgString) {
     // Collect all unique external URLs referenced in href / xlink:href attributes
     const pattern = /(?:xlink:)?href="(https?:\/\/[^"]+)"/g;
@@ -353,7 +396,7 @@ async function createCanvasScreenshot(svg, canvasSize, options = {}) {
     );
     const width = Math.max(1, Math.round(sourceWidth * scale));
     const height = Math.max(1, Math.round(sourceHeight * scale));
-    const inlinedSvg = await inlineExternalImages(svg);
+    const inlinedSvg = await inlineFontImports(await inlineExternalImages(svg));
     const blob = new Blob([inlinedSvg], { type: "image/svg+xml;charset=utf-8" });
     const url = URL.createObjectURL(blob);
 
@@ -930,10 +973,19 @@ polygon, star, arrow. Every element has an \`id\`, a top-left position
   they are converted. "ellipse" is treated as a circle with width != height.
 - Gradients: call add_gradient to get a url(#id) string, then set it as an
   element fill. A url(#...) that was never defined renders as nothing.
-- Text with no explicit width auto-fits to one line; pass width only to wrap it
-  into a column. \`textAnchor\` "middle" needs \`x\` at the centre of the text box.
-- Load non-standard fonts with \`load_font\` before applying them.
-- Use \`fix_elements\` to repair NaN / zero-size elements.
+- Text: add_element({ type:"text", x, y, text }) renders reliably; with no width
+  it auto-fits to one line, pass width only to wrap into a column. insert_svg
+  also works for text and keeps coordinates. textAnchor "middle" needs x at the
+  centre of the text box.
+- Rounded corners: set rx on a rect (ry follows automatically).
+- align_elements: { ids, align: "left"|"right"|"top"|"bottom"|"center-h"|
+  "center-v"|"center" }. With 2+ ids it aligns them to a shared edge; pass
+  relativeTo:"canvas" to align to the canvas instead.
+- load_font embeds the font so it survives screenshot/export; call it before
+  applying a non-system font.
+- Use fix_elements to repair NaN / zero-size elements.
+- Guest canvases live in this browser only and can be lost — tell the user to
+  save to their account for anything they want to keep.
 `;
 
 function makeQuestionId() {
@@ -1063,6 +1115,24 @@ export default function EditorScreen({
     useEffect(() => {
         if (isGuest) storeGuestGroups(groups);
     }, [isGuest, groups]);
+
+    // Warn loudly if local persistence starts failing (quota) — otherwise a
+    // reload silently loses the whole canvas.
+    const persistWarnedRef = useRef(false);
+    useEffect(() => {
+        if (persistStatus === "ok") {
+            persistWarnedRef.current = false;
+            return;
+        }
+        if (persistWarnedRef.current) return;
+        persistWarnedRef.current = true;
+        toast.error(
+            persistStatus === "partial"
+                ? "This device's storage is full — the canvas is being saved without embedded images. Save to your account to keep everything."
+                : "Could not save the canvas locally (storage full). Your work will be lost on reload — save to your account now.",
+            { duration: 8000 },
+        );
+    }, [persistStatus]);
     const groupCounterRef = useRef(0);
 
     // Component-level group helpers (stable callbacks usable outside clientToolHandlers)
@@ -1114,6 +1184,7 @@ export default function EditorScreen({
     const {
         elements,
         elementsRef,
+        persistStatus,
         selectedId,
         selectedIds,
         setSelectedId,
@@ -2858,15 +2929,37 @@ export default function EditorScreen({
 
             align_elements: async ({
                 ids = [],
-                align = "center-h",
+                align,
+                alignment,
+                edge,
                 margin = 0,
-                relativeTo = "canvas",
+                relativeTo,
             } = {}) => {
                 const W = canvasSize.width;
                 const H = canvasSize.height;
-                const targets = elements.filter((e) => ids.includes(e.id));
+                const targets = live().filter((e) => ids.includes(e.id));
                 if (!targets.length)
                     return { aligned: 0, message: "No matching element IDs" };
+
+                // Accept `alignment` / `edge` as aliases for `align`, plus common
+                // synonyms. Default: align on the horizontal axis.
+                const ALIGN_ALIASES = {
+                    left: "left", right: "right", top: "top", bottom: "bottom",
+                    center: "center", middle: "center",
+                    "center-h": "center-h", "center-v": "center-v",
+                    hcenter: "center-h", "h-center": "center-h", horizontal: "center-h",
+                    "center-x": "center-h", centerx: "center-h",
+                    vcenter: "center-v", "v-center": "center-v", vertical: "center-v",
+                    "center-y": "center-v", centery: "center-v",
+                };
+                align =
+                    ALIGN_ALIASES[String(align || alignment || edge || "center-h").toLowerCase()] ||
+                    "center-h";
+
+                // With 2+ elements and no explicit target, align them to a shared
+                // edge (their common bounding box), not the canvas — that's what
+                // "align these left" almost always means.
+                if (!relativeTo) relativeTo = targets.length > 1 ? "group" : "canvas";
                 const updates = [];
                 const flipEntries = [];
 

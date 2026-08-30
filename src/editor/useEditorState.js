@@ -22,8 +22,26 @@ function loadElements() {
   return null;
 }
 
+// Returns 'ok' | 'partial' (saved without heavy image data) | 'failed'.
 function storeElements(els) {
-  try { localStorage.setItem(LS_KEY, JSON.stringify(els)); } catch {}
+  try {
+    localStorage.setItem(LS_KEY, JSON.stringify(els));
+    return 'ok';
+  } catch {
+    // Almost always a quota overflow from large embedded base64 images.
+    // Retry with those stripped so layout + text still survive a reload.
+    try {
+      const slim = els.map((e) =>
+        e && e.type === 'image' && typeof e.href === 'string' && e.href.length > 512
+          ? { ...e, href: '', hrefDropped: true }
+          : e,
+      );
+      localStorage.setItem(LS_KEY, JSON.stringify(slim));
+      return 'partial';
+    } catch {
+      return 'failed';
+    }
+  }
 }
 
 // Coordinates arriving as strings ("96") silently corrupt any arithmetic the
@@ -59,6 +77,9 @@ export function useEditorState(initialElements) {
   const [selectedId, _setSelectedId]   = useState(null);
   const [selectedIds, _setSelectedIds] = useState([]);
   const [historySize, setHistorySize]  = useState({ past: 0, future: 0 });
+  // 'ok' | 'partial' | 'failed' — surfaced so the UI can warn about lost work.
+  const [persistStatus, setPersistStatus] = useState('ok');
+  const persistStatusRef = useRef('ok');
 
   const pastRef        = useRef([]);
   const futureRef      = useRef([]);
@@ -112,7 +133,11 @@ export function useEditorState(initialElements) {
     futureRef.current = [];
     syncHistory();
     setElements(newElements);
-    storeElements(newElements);
+    const result = storeElements(newElements);
+    if (result !== persistStatusRef.current) {
+      persistStatusRef.current = result;
+      setPersistStatus(result);
+    }
   }, [setElements, syncHistory]);
 
   const snapshotBeforeLive = useCallback(() => {
@@ -265,6 +290,7 @@ export function useEditorState(initialElements) {
   return {
     elements,
     elementsRef, // always-current; read this in async tool handlers to avoid stale closures
+    persistStatus,
     selectedId, selectedIds,
     setSelectedId, setPrimarySelectedId, setSelectedIds, toggleSelectedId,
     canUndo: historySize.past > 0,

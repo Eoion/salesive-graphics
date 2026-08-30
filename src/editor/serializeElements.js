@@ -70,13 +70,16 @@ function serializeOne(rawEl) {
   }
 
   switch (el.type) {
-    case 'rect':
+    case 'rect': {
+      // An explicit ry="0" makes SVG ignore rx — mirror whichever is set.
+      const rrx = (Number(el.rx) || 0) || (Number(el.ry) || 0);
+      const rry = (Number(el.ry) || 0) || (Number(el.rx) || 0);
       return `<rect ${attrs({
         id: el.id,
         x: el.x, y: el.y,
         width: Math.max(el.width, 1),
         height: Math.max(el.height, 1),
-        rx: el.rx || 0, ry: el.ry || 0,
+        rx: rrx || undefined, ry: rry || undefined,
         fill: el.fill || 'none',
         stroke: el.stroke !== 'none' ? el.stroke : undefined,
         'stroke-width': el.strokeWidth || undefined,
@@ -84,6 +87,7 @@ function serializeOne(rawEl) {
         'stroke-linecap': lc,
         opacity: el.opacity !== 1 ? el.opacity : undefined,
       })}${desc}${vis}${rot}${styleAttr}${rawAttrStr} />`;
+    }
 
     case 'circle':
     case 'ellipse':

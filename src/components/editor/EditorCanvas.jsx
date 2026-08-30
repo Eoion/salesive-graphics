@@ -83,6 +83,12 @@ function RenderPath({ el }) {
 }
 
 function RenderRect({ el }) {
+    // SVG treats an explicit ry="0" as "square corners", overriding rx. Mirror
+    // whichever radius is set so `{ rx: 10 }` alone still rounds.
+    const rx = Number(el.rx) || 0;
+    const ry = Number(el.ry) || 0;
+    const cornerRx = rx || ry;
+    const cornerRy = ry || rx;
     return (
         <rect
             id={el.id}
@@ -90,8 +96,8 @@ function RenderRect({ el }) {
             y={el.y}
             width={Math.max(el.width, 1)}
             height={Math.max(el.height, 1)}
-            rx={el.rx || 0}
-            ry={el.ry || 0}
+            rx={cornerRx || undefined}
+            ry={cornerRy || undefined}
             fill={el.fill || "none"}
             stroke={el.stroke !== "none" ? el.stroke : "none"}
             strokeWidth={el.strokeWidth || 0}
