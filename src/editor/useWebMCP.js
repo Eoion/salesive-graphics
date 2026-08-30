@@ -104,7 +104,7 @@ const TOOL_DESCRIPTIONS = {
   add_gradient: 'Define a gradient and get the fill string to use. Args: { type?: "linear"|"radial", stops: [{ offset (0-100 or 0-1), stopColor, stopOpacity? }], id?, x1?,y1?,x2?,y2? | cx?,cy?,r? — coords accept 0-100 or 0-1 fractions }. Returns { id, fill: "url(#id)" }.',
   list_gradients: 'List gradients currently defined on the canvas, with their url(#id) fill strings.',
   set_template_name: 'Set the template / document name. Args: { name }.',
-  get_editor_guide: 'Return a guide explaining how to drive this SVG editor with these tools — call it before making changes. Optional args: { topic }.',
+  get_editor_guide: 'Return the full canvas-designer guide: build loop, coordinate/anchor model, gradients, type via insert_svg, icons, layout helpers, and known-broken tools. Call it before making changes.',
   lock_canvas: 'Lock the canvas so the user cannot edit while you work. Always pair with unlock_canvas. Args: { reason? }.',
   unlock_canvas: 'Release the canvas lock taken with lock_canvas. Call this when you finish or abort.',
   ask_canvas_question: 'Ask the user a question about the canvas and wait for their reply. Args: { question, options?: string[], allowCustom? }. Returns { answered, answer, custom }.',
@@ -263,6 +263,9 @@ export function useWebMCP(clientToolHandlers, { enabled = true, onEvent } = {}) 
       if (!handler) throw new Error(`No handler for tool "${name}"`);
       const callId = `mcp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
       const cleanArgs = normalizeToolArgs(rawArgs) || {};
+      // Tag the invocation so handlers that surface UI (lock overlay, question
+      // modal) can attribute it to the external agent rather than "Ola".
+      cleanArgs.__webmcp = true;
       emit({ type: 'call', id: callId, name: key, args: cleanArgs });
       try {
         const result = await handler(cleanArgs);

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import DuotoneIcon from "../DuotoneIcon.jsx";
 import { ICONS } from "../../editor/duotoneIcons.js";
 import { TOOL_ACTIONS } from "../../editor/keymaps/photoshop.js";
@@ -23,6 +24,7 @@ import EditorCanvas from "./EditorCanvas.jsx";
 import EditorAiChat, { uploadImageToStore } from "./EditorAiChat.jsx";
 import { getToolLabel } from "../../editor/toolLabels.js";
 import { resolveLucideIconHref } from "../../editor/lucideIconSvg.js";
+import { EDITOR_GUIDE } from "../../editor/editorGuide.js";
 import EditorPropertiesPanel from "./EditorPropertiesPanel.jsx";
 import LayersPanel from "./LayersPanel.jsx";
 import CommandPalette from "./CommandPalette.jsx";
@@ -991,70 +993,7 @@ function saveLocalCollectionItem(item) {
     return entry;
 }
 
-// Self-describing guide returned by the `get_editor_guide` tool so an agent can
-// learn how to drive this editor before it starts making changes.
-const EDITOR_GUIDE = `# Salesive SVG Editor — agent guide
-
-You are editing a fixed-size SVG canvas made of flat elements: rect, text,
-image/icon, line, path, circle (also "ellipse" — same type, width != height),
-polygon, star, arrow. Every element has an \`id\`, a top-left position
-(\`x\`, \`y\` — numbers, not strings), a size (\`width\`, \`height\`), plus style props
-(\`fill\`, \`stroke\`, \`strokeWidth\`, \`opacity\`, \`rx\`). Text elements also have
-\`text\`, \`fontSize\`, \`fontFamily\`, \`fontWeight\`, \`textAnchor\`, \`lineHeight\`,
-\`textWrap\`. All coordinates are top-left based and unrotated; pass numbers.
-
-## Recommended workflow
-1. Call \`lock_canvas\` with a short \`reason\` so the user does not fight you for
-   control while you work. Always call \`unlock_canvas\` when you finish (or fail).
-2. Call \`get_canvas_state\` (or \`get_snapshot\`) to read size, defs and elements.
-   Use \`get_canvas_screenshot\` / \`review_canvas_region\` to actually see it.
-3. Plan the layout in canvas coordinates. Keep everything inside the canvas
-   bounds; use \`check_layout\` to detect overflow/overlap.
-4. Make changes with the mutation tools:
-   - create: \`add_element\`, \`add_elements\`, \`add_icon\`, and the \`create_*\`
-     component helpers (create_button, create_card, create_navbar, …). Over
-     WebMCP only a core set is exposed directly — reach any other tool (the
-     \`create_*\` builders included) with \`call_editor_tool({ tool, args })\`, and
-     \`list_editor_tools\` enumerates them all.
-   - edit: \`update_element(s)\`, \`set_fill\`, \`set_stroke\`, \`set_opacity\`,
-     \`set_text\`, \`move_element\`, \`resize_element\`.
-   - arrange: \`align_elements\`, \`distribute_elements\`, \`arrange_row/column/grid\`,
-     \`center_in_canvas\`, \`place_at\`, \`constrain_elements\`, \`snap_to_grid\`.
-   - order: \`bring_forward\`, \`send_backward\`, \`bring_to_front\`, \`send_to_back\`.
-   - group: \`create_group\`, \`add_to_group\`, \`dissolve_group\`.
-5. Prefer batch tools (\`update_elements\`, \`add_elements\`, \`batch_update_texts\`)
-   over many single calls.
-6. If a decision is genuinely the user's to make (wording, brand colour, which
-   of two directions), call \`ask_canvas_question\` with a few \`options\` instead
-   of guessing.
-7. Every action is undoable — \`undo_last_action\` / \`redo_last_action\`.
-8. When done: verify with a screenshot, then \`unlock_canvas\`.
-
-## Tips
-- Coordinates are unscaled SVG units, origin top-left. add_element / add_elements
-  place things reliably; insert_svg keeps coordinates ("original") by default.
-- Discs: add_element({ type:"circle", x, y, width, height }), or pass cx/cy/r and
-  they are converted. "ellipse" is treated as a circle with width != height.
-- Gradients: call add_gradient to get a url(#id) string, then set it as an
-  element fill. A url(#...) that was never defined renders as nothing.
-- Text: add_element({ type:"text", x, y, text }) renders reliably; with no width
-  it auto-fits to one line, pass width only to wrap into a column. insert_svg
-  also works for text and keeps coordinates. textAnchor "middle" needs x at the
-  centre of the text box.
-- Rounded corners: set rx on a rect (ry follows automatically).
-- align_elements: { ids, align: "left"|"right"|"top"|"bottom"|"center-h"|
-  "center-v"|"center" }. With 2+ ids it aligns them to a shared edge; pass
-  relativeTo:"canvas" to align to the canvas instead. align_to_element takes
-  { ids, refId, align }.
-- arrange_row / arrange_column / arrange_grid take an { x, y } origin.
-- Layout tools measure text by its visible box even when textAnchor is
-  "middle"/"end", so text and shapes line up.
-- load_font embeds the font so it survives screenshot/export; call it before
-  applying a non-system font.
-- Use fix_elements to repair NaN / zero-size elements.
-- Guest canvases live in this browser only and can be lost — tell the user to
-  save to their account for anything they want to keep.
-`;
+// get_editor_guide serves EDITOR_GUIDE (imported from ../../editor/editorGuide.js).
 
 function makeQuestionId() {
     return `q_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -1124,10 +1063,20 @@ export default function EditorScreen({
     const [isPublic, setIsPublic] = useState(canvasRecord?.public ?? true);
 
     // Agent-controlled canvas lock + question prompt (driven by editor tools)
-    const [agentLock, setAgentLock] = useState({ locked: false, reason: null });
+    const [agentLock, setAgentLock] = useState({ locked: false, reason: null, source: null });
 
     // Identity + live tool-call feed for external (WebMCP) agents
     const [agentIdentity, setAgentIdentity] = useState({ name: null, avatar: null });
+
+    // Display name for whoever drives an agent overlay: "Ola" for the built-in
+    // assistant, the WebMCP agent's chosen name (or "Agent") for external ones.
+    const agentDisplayName = useCallback(
+        (source) =>
+            source === "webmcp"
+                ? agentIdentity.name || "Agent"
+                : "Ola",
+        [agentIdentity.name],
+    );
     const [mcpEvents, setMcpEvents] = useState([]);
     const handleMcpEvent = useCallback((evt) => {
         setMcpEvents((prev) => {
@@ -1419,16 +1368,8 @@ export default function EditorScreen({
         };
     }, [buildCanvasPayload, groups, isGuest, refreshCanvasRecord]);
 
-    useEffect(() => {
-        if (!showExportMenu) return;
-        function handleOutside(e) {
-            if (exportMenuRef.current && !exportMenuRef.current.contains(e.target)) {
-                setShowExportMenu(false);
-            }
-        }
-        document.addEventListener("pointerdown", handleOutside);
-        return () => document.removeEventListener("pointerdown", handleOutside);
-    }, [showExportMenu]);
+    // Outside-click for the export menu is handled inside <ExportMenu> (it is
+    // portaled out of the toolbar, so a ref-contains check here would miss it).
 
     // Inject / remove loaded fonts in the document head whenever the font list changes
     useEffect(() => {
@@ -6940,14 +6881,18 @@ export default function EditorScreen({
                 guide: EDITOR_GUIDE,
             }),
 
-            lock_canvas: async ({ reason } = {}) => {
+            lock_canvas: async ({ reason, __webmcp } = {}) => {
                 const r = String(reason || "").trim() || null;
-                setAgentLock({ locked: true, reason: r });
+                setAgentLock({
+                    locked: true,
+                    reason: r,
+                    source: __webmcp ? "webmcp" : "ola",
+                });
                 return { locked: true, reason: r };
             },
 
             unlock_canvas: async () => {
-                setAgentLock({ locked: false, reason: null });
+                setAgentLock({ locked: false, reason: null, source: null });
                 return { locked: false };
             },
 
@@ -6955,6 +6900,7 @@ export default function EditorScreen({
                 question,
                 options = [],
                 allowCustom = true,
+                __webmcp,
             } = {}) => {
                 const q = String(question || "").trim();
                 if (!q) throw new Error("question is required");
@@ -6978,6 +6924,7 @@ export default function EditorScreen({
                             question: q,
                             options: normOptions,
                             allowCustom: allowCustom !== false,
+                            source: __webmcp ? "webmcp" : "ola",
                         });
                     },
                 );
@@ -7125,12 +7072,16 @@ export default function EditorScreen({
         const now = Date.now();
         if (now - lastToastRef.current < 10000) return;
         lastToastRef.current = now;
-        toast("Ola is working — please wait for it to finish.", {
+        const who =
+            agentRef.isAgentDone && agentLock.locked
+                ? agentDisplayName(agentLock.source)
+                : "Ola";
+        toast(`${who} is working — please wait for it to finish.`, {
             id: "ai-working-toast",
             duration: 10000,
             position: "bottom-center",
         });
-    }, []);
+    }, [agentRef.isAgentDone, agentLock.locked, agentLock.source, agentDisplayName]);
 
     // ── Paste from clipboard ────────────────────────────────────────────────────
     useEffect(() => {
@@ -7606,60 +7557,14 @@ export default function EditorScreen({
                                 <span style={{ fontSize: 9, marginLeft: 2, opacity: 0.7 }}>▾</span>
                             </button>
                             {showExportMenu && (
-                                <div
-                                    style={{
-                                        position: "absolute",
-                                        bottom: "calc(100% + 6px)",
-                                        right: 0,
-                                        minWidth: 140,
-                                        padding: 6,
-                                        borderRadius: 10,
-                                        border: "1px solid rgba(15,23,42,0.1)",
-                                        background: "var(--surface)",
-                                        boxShadow: "0 8px 24px rgba(15,23,42,0.16)",
-                                        zIndex: 200,
-                                        display: "flex",
-                                        flexDirection: "column",
-                                        gap: 2,
-                                    }}
-                                    onPointerDown={(e) => e.stopPropagation()}
-                                >
-                                    {[
+                                <ExportMenu
+                                    anchorRef={exportMenuRef}
+                                    onClose={() => setShowExportMenu(false)}
+                                    items={[
                                         { label: "Export as SVG", onClick: handleDownloadSVG },
                                         { label: "Export as PNG", onClick: handleDownloadPNG },
-                                    ].map(({ label, onClick }) => (
-                                        <button
-                                            key={label}
-                                            onClick={onClick}
-                                            style={{
-                                                width: "100%",
-                                                border: "none",
-                                                background: "transparent",
-                                                color: "var(--text-secondary)",
-                                                display: "flex",
-                                                alignItems: "center",
-                                                gap: 8,
-                                                padding: "7px 10px",
-                                                fontSize: 12,
-                                                fontFamily: "Syne, sans-serif",
-                                                textAlign: "left",
-                                                cursor: "pointer",
-                                                borderRadius: 7,
-                                            }}
-                                            onMouseEnter={(e) => {
-                                                e.currentTarget.style.background = "rgba(13,101,217,0.08)";
-                                                e.currentTarget.style.color = "var(--accent)";
-                                            }}
-                                            onMouseLeave={(e) => {
-                                                e.currentTarget.style.background = "transparent";
-                                                e.currentTarget.style.color = "var(--text-secondary)";
-                                            }}
-                                        >
-                                            <DuotoneIcon svg={ICONS.download} size={12} />
-                                            {label}
-                                        </button>
-                                    ))}
-                                </div>
+                                    ]}
+                                />
                             )}
                         </div>
                     </div>
@@ -7818,7 +7723,8 @@ export default function EditorScreen({
                                     }}
                                 >
                                     {agentRef.isAgentDone && agentLock.locked
-                                        ? agentLock.reason || "Ola locked the canvas while it works…"
+                                        ? agentLock.reason ||
+                                          `${agentDisplayName(agentLock.source)} locked the canvas while it works…`
                                         : thinkDisplayText}
                                     {isTypingThought && (
                                         <span
@@ -8113,6 +8019,7 @@ export default function EditorScreen({
                     question={pendingQuestion.question}
                     options={pendingQuestion.options}
                     allowCustom={pendingQuestion.allowCustom}
+                    agentName={agentDisplayName(pendingQuestion.source)}
                     onAnswer={(answer, custom) => answerPendingQuestion(answer, custom)}
                     onDismiss={() => answerPendingQuestion(null)}
                 />
@@ -8121,7 +8028,116 @@ export default function EditorScreen({
     );
 }
 
-function AgentQuestionModal({ question, options, allowCustom, onAnswer, onDismiss }) {
+// Portal-rendered dropdown for the Export button. The toolbar is a horizontal
+// scroll container (overflow clips both axes), so an in-flow absolute menu is
+// hidden — this renders fixed-position into <body> instead.
+function ExportMenu({ anchorRef, items, onClose }) {
+    const menuRef = useRef(null);
+    const [pos, setPos] = useState(null);
+
+    useEffect(() => {
+        const place = () => {
+            const el = anchorRef.current;
+            if (!el) return;
+            const r = el.getBoundingClientRect();
+            const estH = 24 + (items?.length || 2) * 34; // approx menu height
+            const openUp = r.bottom + 6 + estH > window.innerHeight && r.top > estH + 6;
+            setPos({
+                right: Math.round(window.innerWidth - r.right),
+                ...(openUp
+                    ? { bottom: Math.round(window.innerHeight - r.top + 6) }
+                    : { top: Math.round(r.bottom + 6) }),
+            });
+        };
+        place();
+        window.addEventListener("resize", place);
+        window.addEventListener("scroll", place, true);
+        return () => {
+            window.removeEventListener("resize", place);
+            window.removeEventListener("scroll", place, true);
+        };
+    }, [anchorRef, items]);
+
+    useEffect(() => {
+        const onDown = (e) => {
+            if (
+                menuRef.current?.contains(e.target) ||
+                anchorRef.current?.contains(e.target)
+            )
+                return;
+            onClose();
+        };
+        const onKey = (e) => e.key === "Escape" && onClose();
+        document.addEventListener("pointerdown", onDown);
+        document.addEventListener("keydown", onKey);
+        return () => {
+            document.removeEventListener("pointerdown", onDown);
+            document.removeEventListener("keydown", onKey);
+        };
+    }, [anchorRef, onClose]);
+
+    if (!pos) return null;
+
+    return createPortal(
+        <div
+            ref={menuRef}
+            style={{
+                position: "fixed",
+                ...(pos.top != null ? { top: pos.top } : { bottom: pos.bottom }),
+                right: pos.right,
+                minWidth: 160,
+                padding: 6,
+                borderRadius: 10,
+                border: "1px solid var(--border)",
+                background: "var(--bg-surface)",
+                boxShadow: "0 12px 32px rgba(0,0,0,0.28)",
+                zIndex: 9999,
+                display: "flex",
+                flexDirection: "column",
+                gap: 2,
+            }}
+        >
+            {items.map(({ label, onClick }) => (
+                <button
+                    key={label}
+                    onClick={() => {
+                        onClick();
+                        onClose();
+                    }}
+                    style={{
+                        width: "100%",
+                        border: "none",
+                        background: "transparent",
+                        color: "var(--text-secondary)",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        padding: "7px 10px",
+                        fontSize: 12,
+                        fontFamily: "Syne, sans-serif",
+                        textAlign: "left",
+                        cursor: "pointer",
+                        borderRadius: 7,
+                    }}
+                    onMouseEnter={(e) => {
+                        e.currentTarget.style.background = "var(--accent-dim)";
+                        e.currentTarget.style.color = "var(--accent)";
+                    }}
+                    onMouseLeave={(e) => {
+                        e.currentTarget.style.background = "transparent";
+                        e.currentTarget.style.color = "var(--text-secondary)";
+                    }}
+                >
+                    <DuotoneIcon svg={ICONS.download} size={12} />
+                    {label}
+                </button>
+            ))}
+        </div>,
+        document.body,
+    );
+}
+
+function AgentQuestionModal({ question, options, allowCustom, agentName = "Ola", onAnswer, onDismiss }) {
     const [custom, setCustom] = useState("");
     return (
         <div
@@ -8160,7 +8176,7 @@ function AgentQuestionModal({ question, options, allowCustom, onAnswer, onDismis
                         marginBottom: 8,
                     }}
                 >
-                    Ola has a question
+                    {agentName} has a question
                 </div>
                 <div
                     style={{
